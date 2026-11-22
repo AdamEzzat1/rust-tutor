@@ -1,0 +1,12 @@
+id = "08-threads-and-determinism"
+title = "Threads, Send, Sync and deterministic results"
+track = "core"
+status = "planned"
+summary = """`std::thread::scope` for data parallelism without `Arc`, `Send`/`Sync` as compile-time race freedom, atomics, and why a parallel float sum changes with the thread count unless the reduction tree is fixed."""
+outline = [
+  "thread::scope over chunks",
+  "Send and Sync: the races that do not compile",
+  "Float reductions and reproducibility",
+  "A fixed reduction tree",
+  "Problem: a parallel sum that is bit-identical for 1..8 threads",
+]

@@ -1,0 +1,12 @@
+id = "35-stiffness-and-implicit-methods"
+title = "Stiffness and implicit methods"
+track = "scicomp"
+status = "planned"
+summary = """Why an explicit method's step is limited by stability, not accuracy (measured on Robertson's problem with odeint), backward Euler and a Newton solve, and a Rosenbrock method."""
+outline = [
+  "Stability regions",
+  "Robertson's problem: steps counted, not guessed",
+  "Backward Euler with Newton",
+  "A 2-stage Rosenbrock method",
+  "Problem: switch solver when steps explode",
+]

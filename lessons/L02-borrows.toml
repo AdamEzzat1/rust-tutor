@@ -1,0 +1,143 @@
+id = "L02-borrows"
+title = "Shared XOR mutable: borrows, and splitting them"
+kcs = ["borrow-rules", "split-borrows"]
+prerequisites = ["L01-moves"]
+verified_on = "1.97.1"
+
+body = '''
+A reference either shares (`&T`, any number at once) or mutates (`&mut T`,
+exactly one, and no shared ones alive at the same time). The rule is checked
+at compile time, and it is what lets a numerical kernel take
+`out: &mut [f64]` and `y: &[f64]` and know they do not overlap: no aliasing
+analysis, no `restrict`, no defensive copies.
+
+The checker reasons about *places*. Two fields of a struct are different
+places, so `&mut ws.ytmp` and `&ws.k` can coexist. Two elements of an array
+or `Vec` are not distinguished by index (`k[0]` and `k[1]` are both "some
+element of `k`"), so borrowing one mutably while another is borrowed is an
+error, even though the indices differ. Split the array into disjoint
+borrows: `let [k1, k2, ..] = &mut ws.k;` for a fixed-size array, or
+`let (done, rest) = k.split_at_mut(s);` for a slice. odeint's `rk4_step` and
+`dopri_step` are built on exactly these two forms.
+'''
+
+[[check]]
+id = "borrow-then-push"
+prompt = "A reference to an element is kept while the vector grows. What happens?"
+code = '''
+let mut v = vec![1.0, 2.0];
+let first = &v[0];
+v.push(3.0);
+println!("{first}");
+'''
+options = ["1", "compile error E0502", "panic: index out of bounds", "compile error E0382"]
+answer = 2
+hint = "What can `push` do to the vector's heap buffer when it runs out of capacity, and what would that mean for `first`?"
+explanation = "`push` needs `&mut v` while `first` (a shared borrow) is still used afterwards: E0502. The rule is not pedantry: `push` may reallocate and move the buffer, and `first` would dangle. In C++ the same code compiles and is undefined behaviour."
+
+  [[check.misconception]]
+  option = 1
+  id = "references-are-stable"
+  feedback = "A reference into a vector's buffer is only valid while the buffer cannot move. Rust rejects the program instead of letting it maybe work."
+
+  [[check.misconception]]
+  option = 3
+  id = "borrow-errors-are-runtime"
+  feedback = "Borrow rules are checked at compile time; nothing runs."
+
+  [[check.misconception]]
+  option = 4
+  id = "borrow-is-a-move"
+  feedback = "Nothing was moved: `&v[0]` borrows. E0502 is the shared-then-mutable conflict."
+
+[[check]]
+id = "fields-split"
+prompt = "Two fields of one struct are borrowed, one mutably. What is printed?"
+code = '''
+struct W { a: Vec<f64>, b: Vec<f64> }
+fn main() {
+    let mut w = W { a: vec![1.0], b: vec![5.0] };
+    let x = &mut w.a;
+    let y = &w.b;
+    x[0] = y[0];
+    println!("{}", w.a[0]);
+}
+'''
+options = ["5", "compile error E0502", "compile error E0499", "1"]
+answer = 1
+hint = "Does borrowing `w.a` borrow all of `w`, or only one place inside it?"
+explanation = "Borrows of different fields are disjoint, so `&mut w.a` and `&w.b` coexist. After the last use of `x` and `y`, `w.a` can be read again: it holds 5."
+
+  [[check.misconception]]
+  option = 2
+  id = "borrow-whole-struct"
+  feedback = "Within one function, the borrow checker tracks fields separately. (Through a method taking `&mut self` it cannot: the method borrows all of `self`.)"
+
+  [[check.misconception]]
+  option = 3
+  id = "any-two-borrows-conflict"
+  feedback = "E0499 needs two `&mut` borrows of the same place. Here there is one `&mut` and one `&`, of different fields."
+
+  [[check.misconception]]
+  option = 4
+  id = "assignment-through-ref-copies"
+  feedback = "`x[0] = y[0]` writes through `x` into `w.a` itself; there is no copy of the vector."
+
+[[check]]
+id = "elements-do-not-split"
+prompt = "Two different elements of an array of vectors are borrowed. What happens?"
+code = '''
+let mut k = [vec![1.0], vec![2.0]];
+let a = &mut k[0];
+let b = &k[1];
+a[0] += b[0];
+println!("{}", k[0][0]);
+'''
+options = ["compile error E0502", "3", "compile error E0499", "panic: already borrowed"]
+answer = 1
+hint = "Unlike two fields, does the checker distinguish `k[0]` from `k[1]` when it records a borrow?"
+explanation = "Indexing borrows the whole array: `&mut k[0]` and `&k[1]` overlap as far as the checker knows, so E0502. Write `let [a, b] = &mut k;` (a pattern gives disjoint places) or use `split_at_mut`."
+
+  [[check.misconception]]
+  option = 2
+  id = "index-borrows-are-tracked"
+  feedback = "It would be safe, but the checker does not reason about index values. Destructuring or `split_at_mut` states the disjointness in a form it can check."
+
+  [[check.misconception]]
+  option = 3
+  id = "any-two-borrows-conflict"
+  feedback = "Only one of the borrows is `&mut`; the error is the shared/mutable conflict, E0502."
+
+  [[check.misconception]]
+  option = 4
+  id = "refcell-semantics"
+  feedback = "\"already borrowed\" is `RefCell`'s run-time check. Plain references are checked at compile time."
+
+[[check]]
+id = "destructure-splits"
+prompt = "The same computation, with the array destructured into two borrows. What is printed?"
+code = '''
+let mut k = [vec![1.0], vec![2.0]];
+let [a, b] = &mut k;
+a[0] += b[0];
+println!("{}", k[0][0]);
+'''
+options = ["3", "compile error E0502", "1", "compile error E0499"]
+answer = 1
+hint = "In the pattern `[a, b]`, how many distinct places does each name refer to?"
+explanation = "The pattern binds `a` to element 0 and `b` to element 1 as two disjoint `&mut Vec<f64>`. Reading `b` while writing `a` is fine, and 1 + 2 = 3."
+
+  [[check.misconception]]
+  option = 2
+  id = "index-borrows-are-tracked"
+  feedback = "This is the fix for the previous check: a slice pattern produces disjoint borrows the checker can see."
+
+  [[check.misconception]]
+  option = 3
+  id = "pattern-copies"
+  feedback = "Matching `&mut k` against `[a, b]` binds references into `k`, not copies; the write lands in `k[0]`."
+
+  [[check.misconception]]
+  option = 4
+  id = "any-two-borrows-conflict"
+  feedback = "Two `&mut` borrows are fine when they are of different places, which the pattern guarantees."

@@ -1,0 +1,12 @@
+id = "36-finite-volume-pde"
+title = "Finite volumes for conservation laws"
+track = "scicomp"
+status = "planned"
+summary = """1-D advection and diffusion by finite volumes, conservation to rounding, CFL conditions detected rather than assumed, and flux limiters."""
+outline = [
+  "Cells, fluxes and conservation",
+  "Mass conserved to n eps |mass|",
+  "CFL as a check that returns an error",
+  "Limiters and the TVD property",
+  "Problem: a heat equation with second-order convergence",
+]

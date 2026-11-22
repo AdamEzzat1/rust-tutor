@@ -1,0 +1,12 @@
+id = "39-ecosystem-survey"
+title = "The ecosystem: ndarray, nalgebra, faer and friends"
+track = "scicomp"
+status = "planned"
+summary = """What the crates provide that this course built by hand, what they cost (compile time, dependencies), and how to cross-check them against your own implementations. A survey, not a benchmark: claims are labelled unverified until measured here."""
+outline = [
+  "ndarray: n-d arrays and views",
+  "nalgebra: fixed-size linear algebra",
+  "faer: dense decompositions",
+  "ODE crates with sensitivities (survey only)",
+  "Cross-checking a crate against your std-only reference",
+]

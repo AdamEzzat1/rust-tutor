@@ -1,0 +1,137 @@
+id = "L04-overflow-and-casts"
+title = "Integer overflow and `as`: debug, release and saturation"
+kcs = ["integer-overflow", "numeric-casts"]
+prerequisites = []
+verified_on = "1.97.1"
+
+body = '''
+Integer overflow in Rust is not undefined behaviour, but what it does
+depends on the build profile. With overflow checks on (the default for
+`cargo build` and `cargo test`) it panics; with them off (the default for
+`cargo build --release`) it wraps around modulo 2^n. Code that is right in
+tests can silently compute something else in release. If wrapping is what
+you mean, say it: `wrapping_add`, `checked_add`, `saturating_add`.
+
+Index arithmetic is unsigned: `i - 1` at `i == 0` is an overflow on `usize`.
+
+Casts with `as` never panic. Float to integer **saturates**: out-of-range
+values clamp to the integer's limits and NaN becomes 0. Integer to narrower
+integer truncates bits. Neither is reported.
+
+(The examples hide constants behind `std::hint::black_box`, because rustc
+rejects an overflow it can see at compile time.)
+'''
+
+[[check]]
+id = "debug-overflow"
+prompt = "Built with overflow checks (debug, as `cargo test` does). What happens?"
+code = '''
+let x: u8 = 255;
+let y = x + std::hint::black_box(1);
+println!("{y}");
+'''
+options = ["panic: attempt to add with overflow", "0", "256", "255"]
+answer = 1
+hint = "What is the largest `u8`, and what does a debug build do when a result does not fit?"
+explanation = "With overflow checks on, the addition panics. That is the profile tests run in, so overflow bugs show up there."
+
+  [[check.misconception]]
+  option = 2
+  id = "always-wraps"
+  feedback = "That is the release behaviour. In a debug build overflow panics."
+
+  [[check.misconception]]
+  option = 3
+  id = "auto-widening"
+  feedback = "Rust never widens an integer type implicitly: `u8 + u8` is a `u8`."
+
+  [[check.misconception]]
+  option = 4
+  id = "saturating-default"
+  feedback = "Saturation is opt-in (`saturating_add`); the default is a panic or a wrap."
+
+[[check]]
+id = "release-overflow"
+prompt = "The same code, built with optimisations and without overflow checks (release). What is printed?"
+profile = "release"
+code = '''
+let x: u8 = 255;
+let y = x + std::hint::black_box(1);
+println!("{y}");
+'''
+options = ["0", "panic: attempt to add with overflow", "256", "255"]
+answer = 1
+hint = "Without the check, the hardware add on 8 bits keeps only the low 8 bits of the result. What are they for 256?"
+explanation = "Release builds wrap: 255 + 1 = 0 (mod 256). Same source, different answer: a reason to keep overflow checks on in release for numerical code (`overflow-checks = true` in the profile) or to use explicit `checked_*`/`wrapping_*`."
+
+  [[check.misconception]]
+  option = 2
+  id = "checks-always-on"
+  feedback = "Overflow checks are off by default in the release profile."
+
+  [[check.misconception]]
+  option = 3
+  id = "auto-widening"
+  feedback = "The type is still `u8`; 256 does not fit."
+
+  [[check.misconception]]
+  option = 4
+  id = "saturating-default"
+  feedback = "Without checks the add wraps; it does not clamp."
+
+[[check]]
+id = "usize-underflow"
+prompt = "An index is computed as `n - 4` with `n = 3` (debug build). What happens?"
+code = '''
+let n: usize = std::hint::black_box(3);
+let i = n - 4;
+println!("{i}");
+'''
+options = ["panic: attempt to subtract with overflow", "-1", "compile error E0308", "18446744073709551615"]
+answer = 1
+hint = "Can a `usize` hold a negative number? What does a debug build do when the result has no representation?"
+explanation = "`usize` is unsigned; 3 - 4 overflows and the debug build panics. In release it would wrap to 2^64 - 1 and the next index would be out of bounds (a bounds-check panic, not memory corruption)."
+
+  [[check.misconception]]
+  option = 2
+  id = "signed-indices"
+  feedback = "Indices are `usize` in Rust, which cannot be negative (C/Python intuition)."
+
+  [[check.misconception]]
+  option = 3
+  id = "subtraction-type-error"
+  feedback = "`usize - usize` is well typed; the problem is the value, found at run time."
+
+  [[check.misconception]]
+  option = 4
+  id = "always-wraps"
+  feedback = "That is what a release build would compute. Debug builds check."
+
+[[check]]
+id = "saturating-casts"
+prompt = "Three float-to-integer casts. What is printed?"
+code = '''
+let a = std::hint::black_box(-1.5f64) as u8;
+let b = std::hint::black_box(f64::NAN) as i32;
+let c = std::hint::black_box(300.7f64) as u8;
+println!("{a} {b} {c}");
+'''
+options = ["0 0 255", "254 0 44", "panic: cast overflow", "0 -2147483648 255"]
+answer = 1
+hint = "Since Rust 1.45, a float-to-int `as` maps every input to *some* value of the target type without panicking. Which value is nearest for each input, and what is chosen for NaN?"
+explanation = "Float-to-int casts saturate: -1.5 clamps to 0, 300.7 to 255, and NaN becomes 0. Nothing reports it, so check `is_finite()` and the range first if a value outside the range is a bug."
+
+  [[check.misconception]]
+  option = 2
+  id = "c-cast-wraps"
+  feedback = "Wrapping modulo 256 is integer-to-integer truncation. Float-to-int casts saturate."
+
+  [[check.misconception]]
+  option = 3
+  id = "casts-check"
+  feedback = "`as` never panics; that is why it is dangerous. `u8::try_from(i)` checks, for integers."
+
+  [[check.misconception]]
+  option = 4
+  id = "nan-is-int-min"
+  feedback = "x86's `cvttsd2si` instruction returns INT_MIN for NaN, and C leaves it undefined. Rust defines NaN as 0."

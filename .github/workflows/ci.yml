@@ -1,0 +1,32 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the release; rustup installs it on first use.
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install "$(cat RUST_VERSION)" --profile minimal --component clippy
+          rustc --version
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ hashFiles('RUST_VERSION', 'Cargo.lock') }}
+      # Timed verdicts (fast/slow) are machine-dependent (CLAUDE.md, Known gaps):
+      # a failure that names only a timed verdict is a measurement on this
+      # runner, to be investigated, not silenced by widening a threshold.
+      - name: verify_all
+        run: bash scripts/verify_all.sh

@@ -1,0 +1,398 @@
+id = "02-traits-and-generics"
+title = "Traits and generics: one kernel, many number types"
+track = "core"
+status = "ready"
+summary = "A trait is a contract a type promises to meet; a generic function is written once against the contract and compiled once per type (monomorphisation), so it costs nothing at run time. Worked through dual numbers: the same Horner loop returns a polynomial's value for f64 and its exact derivative for Dual."
+kcs = ["traits-as-contracts", "generic-functions", "operator-overloading", "copy-vs-move-types"]
+prerequisites = ["core/01-ownership-and-borrowing"]
+
+[[section]]
+title = "A trait is a contract; a bound asks for it"
+refs = ["rust-book-ch10", "std-ops"]
+body = '''
+A trait lists methods (and associated types and constants) a type promises
+to provide. A generic function `fn f<T: Bound>(x: T)` may use exactly what
+the bound promises and nothing else: if you call `x * x`, the bound must
+include `Mul<Output = T>`; if you use `x` twice, the bound must include
+`Copy` (or you must borrow). The compiler checks the body against the bound
+once, not per call site, which is why a missing bound is reported in the
+function, as E0369 or E0277, rather than deep inside some caller.
+
+Arithmetic operators are traits from `std::ops`: `a + b` is
+`Add::add(a, b)`. Implementing `Add`, `Mul` and friends for your own type
+lets generic numerical code run on it unchanged.
+'''
+
+  [[section.example]]
+  caption = "A generic Horner evaluator with the bounds it needs, used on f64 and f32."
+  notice = "Notice that the same source gives 17 for both types; the f32 result is printed with f32 formatting."
+  code = '''
+use std::ops::{Add, Mul};
+fn horner<T>(c: &[f64], x: T, from: fn(f64) -> T) -> T
+where
+    T: Copy + Add<Output = T> + Mul<Output = T>,
+{
+    let mut acc = from(0.0);
+    for &ci in c.iter().rev() {
+        acc = acc * x + from(ci);
+    }
+    acc
+}
+fn main() {
+    let c = [1.0, 0.0, 4.0]; // 1 + 4x^2
+    println!("{}", horner(&c, 2.0f64, |v| v));
+    println!("{}", horner(&c, 2.0f32, |v| v as f32));
+}
+'''
+
+  [[section.example]]
+  caption = "Dropping the Copy bound: the body uses `x` on every iteration."
+  notice = "Notice that the error is E0382 in the generic function itself (x is moved by `acc * x` in the first iteration), before any caller is considered."
+  code = '''
+use std::ops::{Add, Mul};
+fn horner<T>(c: &[f64], x: T, from: fn(f64) -> T) -> T
+where
+    T: Add<Output = T> + Mul<Output = T>,
+{
+    let mut acc = from(0.0);
+    for &ci in c.iter().rev() {
+        acc = acc * x + from(ci);
+    }
+    acc
+}
+fn main() {
+    println!("{}", horner(&[1.0, 2.0], 3.0f64, |v| v));
+}
+'''
+
+  [[section.analogy]]
+  title = "A job advert and its applicants"
+  text = '''
+A trait bound is the requirements list on a job advert ("can multiply, can
+add, can be photocopied"). The generic function is the job, written so it
+only ever relies on what was listed. Any type that meets the list may apply,
+and the compiler interviews each one: one that is missing a skill is turned
+away before the program runs.
+'''
+  breaks = '''
+An applicant can bluff; a type cannot claim a trait without implementing
+every required method. And a real employer hires one person to do every
+job; Rust compiles a separate copy of the function for each type that is
+used (monomorphisation), so there is no run-time dispatch and no shared code
+between the f64 and Dual versions, unless you ask for it with `dyn Trait`.
+'''
+
+[[section]]
+title = "Dual numbers: derivatives from operator overloading"
+refs = ["griewank-walther-2008", "std-ops"]
+body = '''
+A dual number is a pair `a + b ε` with the rule `ε² = 0`. Then
+
+    (a + b ε) + (c + d ε) = (a + c) + (b + d) ε
+    (a + b ε) · (c + d ε) = a c + (a d + b c) ε
+
+and for any polynomial (indeed any function built from these operations)
+`f(x + ε) = f(x) + f'(x) ε`. The ε-part is the derivative, computed exactly
+(up to rounding in each operation): there is no step size and no truncation
+error, unlike a finite difference. This is forward-mode automatic
+differentiation.
+
+In Rust a Dual is a two-field struct with `#[derive(Clone, Copy)]` and
+impls of `Add` and `Mul`. It is 16 bytes, has no heap data, and being
+`Copy` it can be used in expressions as freely as an `f64`.
+'''
+
+  [[section.example]]
+  caption = "The generic Horner on a Dual seeded with derivative 1 returns p(2) and p'(2) for p = 1 + 4x^2."
+  notice = "Notice that the value part is 17 and the derivative part is 16 (p' = 8x), and that a Dual is 16 bytes."
+  code = '''
+use std::ops::{Add, Mul};
+#[derive(Clone, Copy, Debug)]
+struct Dual { v: f64, d: f64 }
+impl Add for Dual {
+    type Output = Dual;
+    fn add(self, o: Dual) -> Dual { Dual { v: self.v + o.v, d: self.d + o.d } }
+}
+impl Mul for Dual {
+    type Output = Dual;
+    fn mul(self, o: Dual) -> Dual { Dual { v: self.v * o.v, d: self.v * o.d + self.d * o.v } }
+}
+fn horner<T>(c: &[f64], x: T, from: fn(f64) -> T) -> T
+where
+    T: Copy + Add<Output = T> + Mul<Output = T>,
+{
+    let mut acc = from(0.0);
+    for &ci in c.iter().rev() {
+        acc = acc * x + from(ci);
+    }
+    acc
+}
+fn main() {
+    let c = [1.0, 0.0, 4.0];
+    let r = horner(&c, Dual { v: 2.0, d: 1.0 }, |v| Dual { v, d: 0.0 });
+    println!("{r:?}");
+    println!("size: {}", std::mem::size_of::<Dual>());
+}
+'''
+
+  [[section.example]]
+  caption = "A central finite difference for p = 1 + 4x^2 + x^3 at x = 2 (exact derivative 28), for three step sizes. (For a quadratic the central difference would be exact, so a cubic term is needed to show truncation error, which is exactly h^2 here.)"
+  notice = "Notice that no step size gives 28 exactly: h = 1e-2 is off by h^2 = 1e-4 (truncation), h = 1e-12 is off by about 2.5e-3, worse than h = 1e-2 (rounding amplified by 1/h)."
+  code = '''
+fn p(x: f64) -> f64 { 1.0 + 4.0 * x * x + x * x * x }
+fn main() {
+    for h in [1e-2, 1e-6, 1e-12] {
+        let d = (p(2.0 + h) - p(2.0 - h)) / (2.0 * h);
+        println!("h = {h:e}: {d:?}");
+    }
+}
+'''
+
+[[question]]
+id = "bound-missing"
+kind = "output"
+prompt = "What happens when this is compiled and run?"
+code = '''
+fn sq<T>(x: T) -> T {
+    x * x
+}
+fn main() {
+    println!("{}", sq(3.0));
+}
+'''
+options = ["9", "compile error E0369", "compile error E0382", "compile error E0308"]
+answer = 2
+explanation = "The body uses `*` on a `T` that has no bound saying it supports `*`: E0369 (binary operation cannot be applied to type T). The fix is `T: Mul<Output = T> + Copy`; the compiler checks generic bodies against their bounds, not against the types callers happen to pass."
+
+  [[question.misconception]]
+  option = 1
+  id = "generics-are-templates"
+  feedback = "Unlike C++ templates, a Rust generic is checked against its bounds before any instantiation; `f64` supporting `*` does not help."
+
+  [[question.misconception]]
+  option = 3
+  id = "move-reported-first"
+  feedback = "Using `x` twice would also need `Copy`, but the compiler first reports that `*` is not available at all."
+
+  [[question.misconception]]
+  option = 4
+  id = "type-mismatch"
+  feedback = "There is no mismatch between concrete types here; the problem is an operation the bound does not provide."
+
+[[question]]
+id = "why-copy"
+kind = "choice"
+prompt = "Why derive `Copy` for `Dual { v: f64, d: f64 }`?"
+options = [
+  "So `x` can be used repeatedly in `acc * x` without moving it; copying 16 bytes is as cheap as copying two f64s",
+  "Because Copy makes arithmetic on Dual faster than on f64",
+  "Because operator traits can only be implemented for Copy types",
+  "Because without Copy the struct would be heap-allocated",
+]
+answer = 1
+explanation = "`Mul::mul(self, rhs)` takes its operands by value. Without Copy, the first `acc * x` moves `x` and the next iteration cannot use it (E0382). Copy is right for small plain-data types; it changes no layout and costs nothing extra."
+
+  [[question.misconception]]
+  option = 2
+  id = "copy-is-optimisation"
+  feedback = "Copy changes what the type checker allows, not the generated arithmetic."
+
+  [[question.misconception]]
+  option = 3
+  id = "ops-need-copy"
+  feedback = "You can implement `Add` for any type, including `Vec` or `&Matrix`; Copy is only needed to reuse an operand after passing it by value."
+
+  [[question.misconception]]
+  option = 4
+  id = "structs-on-heap"
+  feedback = "Structs live where you put them (usually the stack); only Box, Vec and the like allocate."
+
+[[problem]]
+id = "gen-value-and-derivative"
+title = "A polynomial's value and exact derivative with dual numbers"
+difficulty = "core"
+kcs = ["operator-overloading", "generic-functions", "copy-vs-move-types"]
+signature = "pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64)"
+entry = "value_and_derivative"
+prompt = '''
+Write `pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64)`
+returning `(p(x), p'(x))` for the polynomial
+`p(x) = c[0] + c[1] x + ... + c[n-1] x^(n-1)`. An empty `c` is the zero
+polynomial. Define a `Dual` type with `Add` and `Mul` (section 2) and
+evaluate the polynomial at `x + ε` by Horner's rule; allocate nothing.
+
+Tolerance: `atol = 1e-10, rtol = 1e-12`, derived. Two correct evaluation
+orders differ by rounding of at most about `2n u Σ i|c_i||x|^(i-1)`.
+The tests use n <= 12, |c_i| <= 4 and |x| <= 1.5, where that sum is below
+about 2e3, giving about `24 · 1.1e-16 · 2e3 ≈ 5e-12`. A central finite
+difference with h = 1e-6 is off by about 1e-9 or more on these cases, so it
+cannot pass.
+'''
+starter = '''
+pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64) {
+    let mut v = 0.0;
+    for &ci in c.iter().rev() {
+        v = v * x + ci;
+    }
+    (v, 0.0)
+}
+'''
+reference = '''
+use std::ops::{Add, Mul};
+
+#[derive(Clone, Copy)]
+struct Dual {
+    v: f64,
+    d: f64,
+}
+
+impl Add for Dual {
+    type Output = Dual;
+    fn add(self, o: Dual) -> Dual {
+        Dual { v: self.v + o.v, d: self.d + o.d }
+    }
+}
+
+impl Mul for Dual {
+    type Output = Dual;
+    fn mul(self, o: Dual) -> Dual {
+        Dual { v: self.v * o.v, d: self.v * o.d + self.d * o.v }
+    }
+}
+
+pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64) {
+    let x = Dual { v: x, d: 1.0 };
+    let mut acc = Dual { v: 0.0, d: 0.0 };
+    for &ci in c.iter().rev() {
+        acc = acc * x + Dual { v: ci, d: 0.0 };
+    }
+    (acc.v, acc.d)
+}
+'''
+cases = [
+  "&[1.0, 0.0, 4.0], 2.0",
+  "&[], 0.7",
+  "&[3.0], -1.2",
+  "&[0.0, 1.0], 1.5",
+  "&[1.0, -3.0, 3.0, -1.0], 1.0",
+  "&[4.0, -4.0, 4.0, -4.0, 4.0, -4.0, 4.0, -4.0, 4.0, -4.0, 4.0, -4.0], -1.5",
+]
+atol = 1e-10
+rtol = 1e-12
+hints = [
+  "The starter computes the value by Horner's rule and returns 0 for the derivative. The derivative should come out of the same loop, with no step size.",
+  "Make a `#[derive(Clone, Copy)] struct Dual { v: f64, d: f64 }`, implement `Add` and `Mul` with the product rule in the ε-part, seed `x` with derivative 1 and each coefficient with derivative 0.",
+]
+
+  [problem.random]
+  count = 25
+  setup = "let n = rng.range(0, 13); let c: Vec<f64> = (0..n).map(|_| 8.0 * rng.f64() - 4.0).collect(); let x = 3.0 * rng.f64() - 1.5;"
+  call = "&c, x"
+
+  [problem.perf]
+  setup = "let c: Vec<f64> = (0..n).map(|_| rng.f64()).collect();"
+  call = "&c, 0.999"
+  n = 100000
+
+  [[problem.variant]]
+  label = "product rule with the wrong cross term (a d + b d)"
+  code = '''
+use std::ops::{Add, Mul};
+#[derive(Clone, Copy)]
+struct Dual { v: f64, d: f64 }
+impl Add for Dual {
+    type Output = Dual;
+    fn add(self, o: Dual) -> Dual { Dual { v: self.v + o.v, d: self.d + o.d } }
+}
+impl Mul for Dual {
+    type Output = Dual;
+    fn mul(self, o: Dual) -> Dual { Dual { v: self.v * o.v, d: self.v * o.d + self.d * o.d } }
+}
+pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64) {
+    let x = Dual { v: x, d: 1.0 };
+    let mut acc = Dual { v: 0.0, d: 0.0 };
+    for &ci in c.iter().rev() {
+        acc = acc * x + Dual { v: ci, d: 0.0 };
+    }
+    (acc.v, acc.d)
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "central finite difference with h = 1e-6"
+  code = '''
+fn p(c: &[f64], x: f64) -> f64 {
+    c.iter().rev().fold(0.0, |acc, &ci| acc * x + ci)
+}
+pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64) {
+    let h = 1e-6;
+    (p(c, x), (p(c, x + h) - p(c, x - h)) / (2.0 * h))
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "two Horner recurrences, no Dual type (correct: the same algebra by hand)"
+  code = '''
+pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64) {
+    let (mut v, mut d) = (0.0, 0.0);
+    for &ci in c.iter().rev() {
+        d = d * x + v;
+        v = v * x + ci;
+    }
+    (v, d)
+}
+'''
+  expect = ["correct", "fast"]
+
+  [[problem.variant]]
+  label = "collects the derivative coefficients into a Vec"
+  code = '''
+pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64) {
+    let dc: Vec<f64> = c.iter().enumerate().skip(1).map(|(i, &ci)| i as f64 * ci).collect();
+    let v = c.iter().rev().fold(0.0, |acc, &ci| acc * x + ci);
+    let d = dc.iter().rev().fold(0.0, |acc, &ci| acc * x + ci);
+    (v, d)
+}
+'''
+  expect = ["correct", "allocates"]
+
+  [[problem.variant]]
+  label = "Dual without derive(Copy): x is moved by the first multiplication"
+  code = '''
+use std::ops::{Add, Mul};
+struct Dual { v: f64, d: f64 }
+impl Add for Dual {
+    type Output = Dual;
+    fn add(self, o: Dual) -> Dual { Dual { v: self.v + o.v, d: self.d + o.d } }
+}
+impl Mul for Dual {
+    type Output = Dual;
+    fn mul(self, o: Dual) -> Dual { Dual { v: self.v * o.v, d: self.v * o.d + self.d * o.v } }
+}
+pub fn value_and_derivative(c: &[f64], x: f64) -> (f64, f64) {
+    let x = Dual { v: x, d: 1.0 };
+    let mut acc = Dual { v: 0.0, d: 0.0 };
+    for &ci in c.iter().rev() {
+        acc = acc * x + Dual { v: ci, d: 0.0 };
+    }
+    (acc.v, acc.d)
+}
+'''
+  expect = ["compile_error:E0382"]
+
+[[reference]]
+id = "rust-book-ch10"
+text = "S. Klabnik, C. Nichols et al., The Rust Programming Language, chapter 10: Generic Types, Traits, and Lifetimes."
+url = "https://doc.rust-lang.org/book/ch10-00-generics.html"
+
+[[reference]]
+id = "std-ops"
+text = "The Rust Standard Library: module std::ops (operator traits)."
+url = "https://doc.rust-lang.org/std/ops/index.html"
+
+[[reference]]
+id = "griewank-walther-2008"
+text = "A. Griewank, A. Walther, Evaluating Derivatives: Principles and Techniques of Algorithmic Differentiation, 2nd ed., SIAM, 2008."
+url = "https://doi.org/10.1137/1.9780898717761"

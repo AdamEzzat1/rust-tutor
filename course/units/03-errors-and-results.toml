@@ -1,0 +1,12 @@
+id = "03-errors-and-results"
+title = "Errors as values: Result, Option and ?"
+track = "core"
+status = "planned"
+summary = """`Result` and `?` for recoverable numerical failure (non-convergence, singular matrices, invalid input), `Option` for absent values, custom error enums with `Display` and `std::error::Error`, and when a panic is the right answer (a broken invariant, not bad data)."""
+outline = [
+  "Result vs panic: whose fault is the failure?",
+  "? and From conversions",
+  "An error enum for a solver (odeint's OdeError as the worked example)",
+  "NaN as a silent error: turning it into an Err at the boundary",
+  "Problem: a Newton iteration returning Result<f64, NewtonError>",
+]

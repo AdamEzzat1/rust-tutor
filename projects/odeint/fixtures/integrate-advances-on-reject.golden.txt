@@ -1,0 +1,27 @@
+== tutor explain: odeint, stage 2 ==
+
+Start here: hole `integrate` at src/lib.rs:333
+  why: 1 of the 1 failing tests depend on it (Ochiai 0.29); 11 of its dependent tests pass.
+  Read its doc comment: it is the specification. Knowledge component: result-error-handling.
+
+Tests: 40/41 pass
+  FAIL behaviour::integrate::rejects_then_recovers  [depends on: dopri_step, error_norm, integrate, next_step_size]
+       tests/behaviour.rs:455: y = 1.2118478751521966
+
+Holes at stage 2 (ranked by sole-cause evidence, then Ochiai over the measured test-to-hole map):
+  1. integrate       0.29  implemented  failing-deps=1 passing-deps=11 sole=0  src/lib.rs:333
+  2. error_norm      0.25  implemented  failing-deps=1 passing-deps=15 sole=0  src/lib.rs:192
+  3. next_step_size  0.25  implemented  failing-deps=1 passing-deps=15 sole=0  src/lib.rs:299
+  4. dopri_step      0.24  implemented  failing-deps=1 passing-deps=16 sole=0  src/lib.rs:256
+  5. lincomb         0.00  implemented  failing-deps=0 passing-deps=11 sole=0  src/lib.rs:133
+  6. rk4_step        0.00  implemented  failing-deps=0 passing-deps=6 sole=0  src/lib.rs:159
+  7. fit_order       0.00  implemented  failing-deps=0 passing-deps=3 sole=0  src/lib.rs:221
+
+Static findings (0):
+  none
+
+Measurements (release build, counting global allocator, deterministic):
+  allocations rk4_step x100: 0  (reference 0)
+  allocations dopri_step x100: 0  (reference 0)
+  allocations integrate(oscillator, 0..10): 0  (reference 0)
+  steps integrate(oscillator, 0..10, tol 1e-8): accepted 95 rejected 0 evals 666  (reference accepted 95 rejected 0 evals 666)

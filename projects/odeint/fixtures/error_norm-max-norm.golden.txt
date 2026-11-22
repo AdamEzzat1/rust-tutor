@@ -1,0 +1,29 @@
+== tutor explain: odeint, stage 1 ==
+
+Start here: hole `error_norm` at src/lib.rs:192
+  why: 3 of the 3 failing tests depend on it (Ochiai 0.43); 13 of its dependent tests pass.
+       3 failing tests depend on no other hole at this stage: only this hole can explain them.
+  Read its doc comment: it is the specification. Knowledge component: iterator-adaptors.
+
+Tests: 38/41 pass
+  FAIL behaviour::integrate::nan_is_an_error_not_a_hang  [depends on: error_norm]
+       tests/behaviour.rs:490: Ok(Stats { accepted: 4, rejected: 0, evals: 29, t_final: 1.0 })
+  FAIL behaviour::norm::empty_is_zero_and_nan_propagates  [depends on: error_norm]
+       tests/behaviour.rs:190: assertion failed: error_norm(&[f64::NAN, 0.0], &[1.0, 1.0], &[1.0, 1.0], 1.0, 1.0).is_nan()
+  FAIL behaviour::norm::hand_computed  [depends on: error_norm]
+       tests/behaviour.rs:169: got 1
+
+Holes at stage 1 (ranked by sole-cause evidence, then Ochiai over the measured test-to-hole map):
+  1. error_norm  0.43  implemented  failing-deps=3 passing-deps=13 sole=3  src/lib.rs:192
+  2. lincomb     0.00  implemented  failing-deps=0 passing-deps=11 sole=0  src/lib.rs:133
+  3. rk4_step    0.00  implemented  failing-deps=0 passing-deps=6 sole=0  src/lib.rs:159
+  4. fit_order   0.00  implemented  failing-deps=0 passing-deps=3 sole=0  src/lib.rs:212
+
+Static findings (0):
+  none
+
+Measurements (release build, counting global allocator, deterministic):
+  allocations rk4_step x100: 0  (reference 0)
+  allocations dopri_step x100: 0  (reference 0)
+  allocations integrate(oscillator, 0..10): 0  (reference 0)
+  steps integrate(oscillator, 0..10, tol 1e-8): accepted 100 rejected 0 evals 701  (reference accepted 95 rejected 0 evals 666)

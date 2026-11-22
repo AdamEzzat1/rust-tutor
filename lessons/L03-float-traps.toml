@@ -1,0 +1,127 @@
+id = "L03-float-traps"
+title = "Floats: rounding, NaN and the comparisons that lie"
+kcs = ["floating-point-comparison", "nan-and-total-order"]
+prerequisites = []
+verified_on = "1.97.1"
+
+body = '''
+`f64` arithmetic rounds every result to the nearest representable value
+(IEEE 754, round to nearest, ties to even). The rounding is deterministic,
+but it means algebraic identities hold only approximately: `0.1 + 0.2` is
+not the float nearest to `0.3`, and `(a + b) - a` need not be `b`.
+
+NaN is the result of undefined operations (`0.0 / 0.0`, `sqrt(-1.0)`). It is
+unordered: every comparison with NaN is false, so `f64` is only
+`PartialOrd`, and `partial_cmp` returns `None` for it. `f64::max` and
+`f64::min` *ignore* a NaN argument (IEEE `maxNum`), so NaN can vanish from a
+reduction silently. `f64::total_cmp` gives a total order (NaN after +inf),
+which is what sorting measured data needs.
+'''
+
+[[check]]
+id = "point-three"
+prompt = "What is printed?"
+code = '''
+println!("{}", 0.1 + 0.2 == 0.3);
+'''
+options = ["false", "true", "compile error E0369", "0.30000000000000004"]
+answer = 1
+hint = "Each of 0.1, 0.2 and 0.3 is rounded when it is written. Is the sum of the first two rounded values the same float as the third?"
+explanation = "0.1 and 0.2 are stored slightly above their decimal values; their rounded sum is 0.30000000000000004, one float above the float nearest 0.3. Tests compare with a tolerance (rule RT001)."
+
+  [[check.misconception]]
+  option = 2
+  id = "decimal-floats"
+  feedback = "Floats are binary: 0.1 has no exact binary representation, so its rounding error is visible in the sum."
+
+  [[check.misconception]]
+  option = 3
+  id = "float-eq-forbidden"
+  feedback = "`==` is defined for floats (`PartialEq`); it compiles. It is just rarely the comparison you want."
+
+  [[check.misconception]]
+  option = 4
+  id = "prints-the-sum"
+  feedback = "The expression is a comparison, so it prints a `bool`."
+
+[[check]]
+id = "sort-with-nan"
+prompt = "A vector with a NaN is sorted with `partial_cmp`. What happens?"
+code = '''
+let mut v = vec![2.0, f64::NAN, 1.0];
+v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+println!("{:?}", v);
+'''
+options = ["panic: called `Option::unwrap()` on a `None` value", "[1.0, 2.0, NaN]", "[NaN, 1.0, 2.0]", "compile error E0277"]
+answer = 1
+hint = "What does `partial_cmp` return when one side is NaN, and what does `unwrap` do with that value?"
+explanation = "Comparing anything with NaN gives `None`, and `unwrap` panics. `v.sort_by(|a, b| a.total_cmp(b))` sorts to [1.0, 2.0, NaN] (rule RT004)."
+
+  [[check.misconception]]
+  option = 2
+  id = "nan-sorts-last"
+  feedback = "That is what `total_cmp` would give. `partial_cmp` has no answer for NaN, and `unwrap` turns that into a panic."
+
+  [[check.misconception]]
+  option = 3
+  id = "nan-is-smallest"
+  feedback = "NaN is not less than anything. Under `total_cmp`, positive NaN sorts after +inf, not first."
+
+  [[check.misconception]]
+  option = 4
+  id = "f64-not-sortable"
+  feedback = "`sort()` (which needs `Ord`) would not compile for `f64`; `sort_by` with a closure does."
+
+[[check]]
+id = "max-drops-nan"
+prompt = "What does `max` do with a NaN?"
+code = '''
+let x = f64::NAN;
+println!("{} {}", x.max(1.0), x > 1.0);
+'''
+options = ["1 false", "NaN false", "NaN true", "panic: NaN"]
+answer = 1
+hint = "IEEE 754 defines `maxNum` so that a missing value does not poison a maximum. Which argument does that leave?"
+explanation = "`f64::max` returns the non-NaN argument, so the NaN disappears; and every comparison with NaN is false. A reduction `fold(f64::NEG_INFINITY, f64::max)` over data with NaNs silently skips them: decide whether that is what you want."
+
+  [[check.misconception]]
+  option = 2
+  id = "nan-propagates-everywhere"
+  feedback = "Arithmetic propagates NaN (`NaN + 1.0` is NaN), but `max`/`min` are defined to ignore it."
+
+  [[check.misconception]]
+  option = 3
+  id = "nan-compares-true"
+  feedback = "Every ordered comparison involving NaN is false, including `>`."
+
+  [[check.misconception]]
+  option = 4
+  id = "nan-panics"
+  feedback = "Float operations never panic; NaN is an ordinary value."
+
+[[check]]
+id = "absorption"
+prompt = "A small number is added to a large one and the large one subtracted. What is printed?"
+code = '''
+let big = 1e16;
+println!("{}", (big + 1.0) - big);
+'''
+options = ["0", "1", "2", "1e-16"]
+answer = 1
+hint = "How far apart are neighbouring floats near 1e16? Compare that gap with 1.0."
+explanation = "Floats near 1e16 are 2.0 apart, so 1e16 + 1 is a tie that rounds to even: 1e16 itself. The subtraction is then exact, and the 1.0 is gone. Compensated summation (unit 30) recovers such losses."
+
+  [[check.misconception]]
+  option = 2
+  id = "subtraction-recovers"
+  feedback = "The subtraction is exact, but the information was already lost in the addition."
+
+  [[check.misconception]]
+  option = 3
+  id = "rounds-up"
+  feedback = "Ties round to the neighbour with an even last bit, which here is 1e16, not 1e16 + 2."
+
+  [[check.misconception]]
+  option = 4
+  id = "relative-error-printed"
+  feedback = "The result is an ordinary float, and `{}` prints its value."

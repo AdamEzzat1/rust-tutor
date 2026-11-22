@@ -1,0 +1,19 @@
+[package]
+name = "tutor"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "A symbolic, deterministic Rust tutor for scientific computing. No LLM in the feedback loop."
+
+# Every dependency is justified in docs/DESIGN.md section 2. Learner code and
+# projects are std-only.
+[dependencies]
+syn = { version = "2", default-features = false, features = ["full", "parsing", "visit", "printing"] }
+proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
+quote = { version = "1", default-features = false }
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+syn = { version = "2", default-features = false, features = ["full", "parsing"] }

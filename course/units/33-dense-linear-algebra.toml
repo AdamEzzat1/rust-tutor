@@ -1,0 +1,12 @@
+id = "33-dense-linear-algebra"
+title = "Dense linear algebra from scratch"
+track = "scicomp"
+status = "planned"
+summary = """LU with partial pivoting on a row-major matrix, forward/back substitution, the condition number and backward stability, and a Hilbert matrix solved to the wrong answer by a backward-stable method."""
+outline = [
+  "LU with partial pivoting",
+  "Triangular solves without allocation",
+  "Condition number, forward and backward error",
+  "Hilbert matrices",
+  "Problem: LU that agrees with a reference to a derived tolerance",
+]

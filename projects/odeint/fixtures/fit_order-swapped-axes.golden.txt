@@ -1,0 +1,30 @@
+== tutor explain: odeint, stage 1 ==
+
+Start here: hole `fit_order` at src/lib.rs:221
+  why: 3 of the 3 failing tests depend on it (Ochiai 1.00).
+       3 failing tests depend on no other hole at this stage: only this hole can explain them.
+  Read its doc comment: it is the specification. Knowledge component: convergence-order.
+
+Tests: 38/41 pass
+  FAIL behaviour::order::is_least_squares_not_endpoints  [depends on: fit_order]
+       tests/behaviour.rs:216: got 0.5
+  FAIL behaviour::order::recovers_power_laws  [depends on: fit_order]
+       tests/behaviour.rs:205: p = 2, got 0.4999999999999999
+  FAIL behaviour::order::rejects_bad_input  [depends on: fit_order]
+       tests/behaviour.rs:230: assertion `left == right` failed
+       left: Some(0.0)
+
+Holes at stage 1 (ranked by sole-cause evidence, then Ochiai over the measured test-to-hole map):
+  1. fit_order   1.00  implemented  failing-deps=3 passing-deps=0 sole=3  src/lib.rs:221
+  2. lincomb     0.00  implemented  failing-deps=0 passing-deps=11 sole=0  src/lib.rs:133
+  3. rk4_step    0.00  implemented  failing-deps=0 passing-deps=6 sole=0  src/lib.rs:159
+  4. error_norm  0.00  implemented  failing-deps=0 passing-deps=16 sole=0  src/lib.rs:192
+
+Static findings (0):
+  none
+
+Measurements (release build, counting global allocator, deterministic):
+  allocations rk4_step x100: 0  (reference 0)
+  allocations dopri_step x100: 0  (reference 0)
+  allocations integrate(oscillator, 0..10): 0  (reference 0)
+  steps integrate(oscillator, 0..10, tol 1e-8): accepted 95 rejected 0 evals 666  (reference accepted 95 rejected 0 evals 666)

@@ -1,0 +1,12 @@
+id = "32-convergence-and-verification"
+title = "Convergence order and code verification"
+track = "scicomp"
+status = "planned"
+summary = """The method of manufactured solutions, observed order from a log-log fit, the asymptotic regime, Richardson extrapolation, and the difference between verification and validation. Uses odeint's fit_order."""
+outline = [
+  "Observed order: slope of log error vs log h",
+  "Where the asymptotic regime begins and ends (rounding floor)",
+  "Manufactured solutions",
+  "Richardson extrapolation",
+  "Problem: find the bug from an order plot",
+]

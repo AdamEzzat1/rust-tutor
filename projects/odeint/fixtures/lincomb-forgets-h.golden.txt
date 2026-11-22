@@ -1,0 +1,31 @@
+== tutor explain: odeint, stage 1 ==
+
+Start here: hole `lincomb` at src/lib.rs:133
+  why: 4 of the 4 failing tests depend on it (Ochiai 0.60); 7 of its dependent tests pass.
+       1 failing test depends on no other hole at this stage: only this hole can explain it.
+  Read its doc comment: it is the specification. Knowledge component: slices-and-borrows.
+
+Tests: 37/41 pass
+  FAIL behaviour::lincomb::exact_on_small_integers  [depends on: lincomb]
+       tests/behaviour.rs:55: got [4.0, 3.0, 2.0]
+  FAIL behaviour::rk4::one_step_matches_taylor  [depends on: lincomb, rk4_step]
+       tests/behaviour.rs:117: y = 0.9375, want 0.9048375000000001
+  FAIL behaviour::rk4::order_is_four  [depends on: lincomb, rk4_step]
+       tests/behaviour.rs:146: fitted order -0.021633698311539634, errors [0.15658103387728461, 0.1620698435116813, 0.16474736359760322, 0.16606996106252925, 0.1667272862214234]
+  FAIL behaviour::rk4::oscillator_keeps_phase  [depends on: lincomb, rk4_step]
+       tests/behaviour.rs:157: error 0.5627145538928464
+
+Holes at stage 1 (ranked by sole-cause evidence, then Ochiai over the measured test-to-hole map):
+  1. lincomb     0.60  implemented  failing-deps=4 passing-deps=7 sole=1  src/lib.rs:133
+  2. rk4_step    0.61  implemented  failing-deps=3 passing-deps=3 sole=0  src/lib.rs:159
+  3. error_norm  0.00  implemented  failing-deps=0 passing-deps=16 sole=0  src/lib.rs:192
+  4. fit_order   0.00  implemented  failing-deps=0 passing-deps=3 sole=0  src/lib.rs:221
+
+Static findings (0):
+  none
+
+Measurements (release build, counting global allocator, deterministic):
+  allocations rk4_step x100: 0  (reference 0)
+  allocations dopri_step x100: 0  (reference 0)
+  allocations integrate(oscillator, 0..10): 0  (reference 0)
+  steps integrate(oscillator, 0..10, tol 1e-8): accepted 95 rejected 0 evals 666  (reference accepted 95 rejected 0 evals 666)

@@ -1,0 +1,12 @@
+id = "05-crates-modules-testing"
+title = "Crates, modules and tests as specifications"
+track = "core"
+status = "planned"
+summary = """Packages and modules, `pub`, unit vs integration tests, `#[should_panic]` and why it cannot tell `todo!()` from a correct panic, property tests without dependencies, and tolerances that say where they come from."""
+outline = [
+  "Module tree and visibility",
+  "Integration tests as the public contract",
+  "Deriving a test tolerance from an error bound",
+  "The should_panic trap (found by odeint's holemap)",
+  "Problem: write tests that kill a set of mutants",
+]

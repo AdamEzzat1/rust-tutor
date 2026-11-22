@@ -1,0 +1,544 @@
+id = "30-floating-point"
+title = "Floating point, cancellation and stable algorithms"
+track = "scicomp"
+status = "ready"
+summary = "Why a numerical answer can be wrong and whose fault it is. Every operation rounds by at most half an ulp; cancellation is exact but exposes earlier rounding; the algorithm decides how much error accumulates. Shown on sums (plain, Kahan, Neumaier) and on the sample variance (naive formula vs two-pass)."
+kcs = ["floating-point-rounding", "cancellation", "compensated-summation", "nan-and-total-order"]
+prerequisites = ["lesson:L03-float-traps", "core/01-ownership-and-borrowing"]
+
+[[section]]
+title = "Every operation rounds, and the errors add up"
+refs = ["goldberg-1991", "higham-2002"]
+body = '''
+IEEE 754 arithmetic computes each `+`, `-`, `*`, `/` and `sqrt` as if
+exactly, then rounds to the nearest `f64`. The relative error of one
+operation is at most the **unit roundoff** `u = f64::EPSILON / 2 ≈ 1.1e-16`:
+
+    fl(x + y) = (x + y)(1 + δ),   |δ| <= u
+
+One operation is as good as the format allows. A computation is many
+operations, each rounding a value that already carries error, so:
+
+* **Addition is not associative.** `(a + b) + c` and `a + (b + c)` round
+  different intermediate sums. A reordered or vectorised sum can differ in
+  its last digits; that is not a bug, but a test that expects the old digits
+  is.
+* **A loop `s += x[i]` over n terms** has a worst-case error that grows like
+  `n u` times `sum |x[i]|`. When the running sum is large, a small term's
+  low digits are rounded away, every time.
+
+`Iterator::sum` for `f64` is a plain left-to-right fold: Rust does not
+reorder float sums for you (LLVM may not reassociate float addition without
+fast-math flags, which Rust does not set). So `x.iter().sum()` has exactly
+the error of the hand-written loop.
+'''
+
+  [[section.example]]
+  caption = "Two orders of the same three-term sum give different floats."
+  notice = "Notice that the two results differ by one float spacing at 0.6 (about 1.1e-16)."
+  code = '''
+println!("(0.1 + 0.2) + 0.3 = {:?}", (0.1 + 0.2) + 0.3);
+println!("0.1 + (0.2 + 0.3) = {:?}", 0.1 + (0.2 + 0.3));
+'''
+
+  [[section.example]]
+  caption = "Adding ten thousand terms of 1e-16 to 1.0: each is below half the spacing of floats near 1, so the plain loop rounds every one away."
+  notice = "Notice that the plain loop and `iter().sum()` agree to the last bit (the same fold), and both lose all ten thousand terms."
+  code = '''
+let mut x = vec![1.0];
+x.extend(std::iter::repeat(1e-16).take(10_000));
+let mut s = 0.0;
+for v in &x {
+    s += v;
+}
+let t: f64 = x.iter().sum();
+println!("plain loop: {s:?}");
+println!("iter sum:   {t:?}");
+println!("same bits:  {}", s.to_bits() == t.to_bits());
+'''
+
+  [[section.analogy]]
+  title = "A ruler whose marks spread out"
+  text = '''
+Picture a ruler with a mark every millimetre between 1 and 2 cm, every 2 mm
+between 2 and 4 cm, every 4 mm between 4 and 8 cm, and so on. Every length
+is written down as the nearest mark, so a reading is never off by more than
+half the local gap, and that half-gap is always about the same fraction of
+the length. A float is such a mark; a long sum is a chain of readings, each
+rounded again.
+'''
+  breaks = '''
+A person reading a ruler wobbles; IEEE rounding is a fixed rule (nearest,
+ties to even), so the same operation on the same inputs always gives the
+same float: the error is deterministic, not random. And below about 2.2e-308
+(the subnormal range) the gaps stop shrinking, so the relative error is no
+longer bounded by u.
+'''
+
+[[section]]
+title = "Compensated summation"
+refs = ["kahan-1965", "neumaier-1974"]
+body = '''
+**Kahan's compensated summation** keeps a second variable `c` with the
+low-order part that each addition lost, and feeds it back into the next
+term. The trick works because, when `|s| >= |y|`, the error of `t = s + y`
+is computed *exactly* in floating point by `(t - s) - y` (with the sign
+flipped). Its error bound is about `2u · sum |x[i]|`, independent of n.
+
+Kahan's version assumes the running sum is at least as large as each new
+term. When a term is larger (`[1.0, 1e100, 1.0, -1e100]`), the digits lost
+are the running sum's, and the correction recovers nothing. **Neumaier's
+variant** computes the lost part from whichever operand is larger in
+magnitude, accumulates the corrections separately, and adds them once at the
+end. The first problem asks for it.
+'''
+
+  [[section.example]]
+  caption = "Kahan's loop on the ten thousand tiny terms, and on a sequence where a term exceeds the running sum."
+  notice = "Notice that Kahan recovers the tiny terms (1.000000000001) but returns 0 for the second input, whose true sum is 2."
+  code = '''
+fn kahan(x: &[f64]) -> f64 {
+    let (mut s, mut c) = (0.0, 0.0);
+    for &v in x {
+        let y = v - c;      // the term, corrected by what was lost last time
+        let t = s + y;
+        c = (t - s) - y;    // what this addition lost (exact when |s| >= |y|)
+        s = t;
+    }
+    s
+}
+fn main() {
+    let mut x = vec![1.0];
+    x.extend(std::iter::repeat(1e-16).take(10_000));
+    println!("tiny terms: {:?}", kahan(&x));
+    println!("big terms:  {:?}", kahan(&[1.0, 1e100, 1.0, -1e100]));
+}
+'''
+
+[[section]]
+title = "Cancellation: exact, and still the problem"
+refs = ["higham-2002", "chan-golub-leveque-1983"]
+body = '''
+Subtracting two nearly equal floats is **exact** (Sterbenz's lemma: if
+`y/2 <= x <= 2y`, `x - y` is representable). What it exposes is the error
+already in `x` and `y`: their leading digits cancel, and the rounding errors
+in the trailing digits become the leading digits of the result.
+
+The textbook variance formula `(sum x² - n · mean²) / (n - 1)` subtracts two
+numbers of size `n · mean²` to get one of size `n · s²`. When the mean is
+large compared with the spread, every rounding error in the two big numbers
+is magnified by `mean² / s²`.
+
+There must be rounding error for cancellation to expose. For integer data
+near 1e6, every square (about 1e12) and every sum is an integer below 2^53,
+so nothing rounds and the naive formula happens to be exact. Near 1e8 the
+squares are about 1e16, where floats are 2 apart: the sums round, and the
+subtraction turns those roundings into the answer. The two-pass algorithm
+(subtract the mean first, then square) never forms the big numbers.
+'''
+
+  [[section.example]]
+  caption = "Sample variance of 1e8 + [1, 2, 3, 4] (true value 5/3) by the naive formula and by two passes."
+  notice = "Notice that the naive formula returns 2.67 (wrong in the first digit); the two-pass result is 5/3 to the last bit."
+  code = '''
+fn naive(x: &[f64]) -> f64 {
+    let n = x.len() as f64;
+    let s: f64 = x.iter().sum();
+    let s2: f64 = x.iter().map(|v| v * v).sum();
+    (s2 - s * s / n) / (n - 1.0)
+}
+fn two_pass(x: &[f64]) -> f64 {
+    let n = x.len() as f64;
+    let m = x.iter().sum::<f64>() / n;
+    x.iter().map(|v| (v - m) * (v - m)).sum::<f64>() / (n - 1.0)
+}
+fn main() {
+    let x: Vec<f64> = [1.0, 2.0, 3.0, 4.0].iter().map(|v| 1e8 + v).collect();
+    println!("naive:    {:?}", naive(&x));
+    println!("two-pass: {:?}", two_pass(&x));
+    println!("exact:    {:?}", 5.0 / 3.0);
+}
+'''
+
+[[question]]
+id = "sum-order"
+kind = "output"
+prompt = "`iter().sum()` versus a reversed sum of the same values. What is printed?"
+code = '''
+let x = [1e16, 1.0, -1e16, 1.0];
+let a: f64 = x.iter().sum();
+let b: f64 = x.iter().rev().sum();
+println!("{a} {b}");
+'''
+options = ["1 1", "2 2", "0 0", "1 0"]
+answer = 4
+explanation = "Floats near 1e16 are 2 apart, so 1e16 + 1 is a tie and rounds to even, back to 1e16. Forward: 1e16 + 1 = 1e16, minus 1e16 is 0, plus 1 is 1. Reversed ([1, -1e16, 1, 1e16]): both 1.0s are rounded away against -1e16 before the big terms cancel, giving 0. The true sum is 2: neither order finds it, and they disagree with each other."
+
+  [[question.misconception]]
+  option = 1
+  id = "order-does-not-matter"
+  feedback = "Addition of floats is not associative: the reversed order meets -1e16 first and loses both 1.0s."
+
+  [[question.misconception]]
+  option = 2
+  id = "sum-is-exact"
+  feedback = "The exact sum is 2, but each order rounds at least one 1.0 away against a term of size 1e16."
+
+  [[question.misconception]]
+  option = 3
+  id = "everything-cancels"
+  feedback = "The big terms cancel exactly; in the forward order the last 1.0 is added after they cancel, so it survives."
+
+[[question]]
+id = "whose-fault"
+kind = "choice"
+prompt = "For the data 1e8 + [1, 2, 3, 4], the naive variance formula gives 2.6666666666666665 instead of 1.6666666666666667. Whose fault is it?"
+options = [
+  "The algorithm: it forms two large nearly equal numbers and subtracts them",
+  "The data: variance near 1e8 is ill-conditioned for any algorithm",
+  "Rust: f64 arithmetic should be exact for these integers",
+  "The final division by n - 1",
+]
+answer = 1
+explanation = "The problem (variance of these four numbers) is well conditioned: the two-pass algorithm gets it to the last bits. The naive formula's cancellation magnifies its own rounding errors."
+
+  [[question.misconception]]
+  option = 2
+  id = "blame-the-problem"
+  feedback = "A well-conditioned problem can be solved badly by an unstable algorithm; the two-pass result shows this problem is fine."
+
+  [[question.misconception]]
+  option = 3
+  id = "floats-exact-for-integers"
+  feedback = "The inputs are exact, but their squares near 1e16 are not all representable (floats there are 2 apart), and the subtraction exposes those roundings."
+
+  [[question.misconception]]
+  option = 4
+  id = "blame-the-last-step"
+  feedback = "Dividing by 3 rounds once, by at most u relative; the damage was done by the subtraction before it."
+
+[[problem]]
+id = "fp-neumaier-sum"
+title = "Compensated summation that survives large terms"
+difficulty = "warm-up"
+kcs = ["compensated-summation"]
+signature = "pub fn neumaier_sum(x: &[f64]) -> f64"
+entry = "neumaier_sum"
+prompt = '''
+Kahan's loop (section 2) returns 0.0 for `[1.0, 1e100, 1.0, -1e100]`; the
+true sum is 2.0. Write `pub fn neumaier_sum(x: &[f64]) -> f64` using
+**Neumaier's** compensated summation: for each term `v`, form `t = s + v`;
+the error of that addition is computed exactly from the larger of `s` and
+`v` in magnitude, minus `t`, plus the smaller one. Accumulate every such
+error in a separate `c`, and return `s + c` once, at the end. An empty
+slice sums to 0.0. Allocate nothing.
+
+    neumaier_sum(&[1.0, 1e100, 1.0, -1e100])   // 2.0
+    neumaier_sum(&[1e16, 1.0, -1e16])           // 1.0
+
+Results are compared with `rtol = 1e-15`. Neumaier's error is about
+`u · |sum|` plus `n u² · sum |x|`, so on these inputs two correct versions
+agree to within a few roundings; the plain loop, `iter().sum()` and Kahan's
+version all fail the first two cases above. Speed and allocations are
+graded against the reference.
+'''
+starter = '''
+pub fn neumaier_sum(x: &[f64]) -> f64 {
+    let mut s = 0.0;
+    for &v in x {
+        s += v;
+    }
+    s
+}
+'''
+reference = '''
+pub fn neumaier_sum(x: &[f64]) -> f64 {
+    let mut s = 0.0;
+    let mut c = 0.0;
+    for &v in x {
+        let t = s + v;
+        if s.abs() >= v.abs() {
+            c += (s - t) + v; // the low digits of v were lost
+        } else {
+            c += (v - t) + s; // the low digits of s were lost
+        }
+        s = t;
+    }
+    s + c
+}
+'''
+cases = [
+  "&[1.0, 1e100, 1.0, -1e100]",
+  "&[1e16, 1.0, -1e16]",
+  "&{ let mut x = vec![1.0]; x.extend(std::iter::repeat(1e-16).take(10_000)); x }",
+  "&vec![0.1; 100_000]",
+  "&[]",
+  "&[3.0, 1e-16, 1e-16, 1e-16, 1e-16, 1e-16, -1.0]",
+]
+rtol = 1e-15
+hints = [
+  "The starter is the plain loop: it loses low digits at every addition. Keep a second variable for what each addition lost, and decide which of the two operands lost them.",
+  "When `s.abs() >= v.abs()`, `v`'s low digits were lost and `(s - t) + v` gives them back exactly. The other case is symmetric. Add the accumulated errors once, after the loop.",
+]
+
+  [problem.random]
+  count = 15
+  setup = "let mut x = vec![1.0 + rng.f64()]; let m = rng.range(2000, 6000); for _ in 0..m { x.push(1e-16 * rng.f64()); } if rng.f64() < 0.5 { x.push(1e20 * rng.f64()); x.push(1.0); x.push(-x[m + 1]); }"
+  call = "&x"
+
+  [problem.perf]
+  setup = "let x: Vec<f64> = (0..n).map(|_| rng.f64()).collect();"
+  call = "&x"
+  n = 100000
+
+  [[problem.variant]]
+  label = "iter().sum(): a plain left fold"
+  code = '''
+pub fn neumaier_sum(x: &[f64]) -> f64 {
+    x.iter().sum()
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "Kahan's version: fails when a term exceeds the running sum"
+  code = '''
+pub fn neumaier_sum(x: &[f64]) -> f64 {
+    let (mut s, mut c) = (0.0, 0.0);
+    for &v in x {
+        let y = v - c;
+        let t = s + y;
+        c = (t - s) - y;
+        s = t;
+    }
+    s
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "always assumes s is the larger operand"
+  code = '''
+pub fn neumaier_sum(x: &[f64]) -> f64 {
+    let (mut s, mut c) = (0.0, 0.0);
+    for &v in x {
+        let t = s + v;
+        c += (s - t) + v;
+        s = t;
+    }
+    s + c
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "branch-free, with an if-expression"
+  code = '''
+pub fn neumaier_sum(x: &[f64]) -> f64 {
+    let (mut s, mut c) = (0.0, 0.0);
+    for &v in x {
+        let t = s + v;
+        c += if s.abs() >= v.abs() { (s - t) + v } else { (v - t) + s };
+        s = t;
+    }
+    s + c
+}
+'''
+  expect = ["correct", "fast"]
+
+  [[problem.variant]]
+  label = "sorts by magnitude first (with total_cmp): still wrong, and allocates"
+  code = '''
+pub fn neumaier_sum(x: &[f64]) -> f64 {
+    let mut v = x.to_vec();
+    v.sort_by(|a, b| a.abs().total_cmp(&b.abs()));
+    v.iter().sum()
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "fold with a tuple accumulator"
+  code = '''
+pub fn neumaier_sum(x: &[f64]) -> f64 {
+    let (s, c) = x.iter().fold((0.0f64, 0.0f64), |(s, c), &v| {
+        let t = s + v;
+        let e = if s.abs() >= v.abs() { (s - t) + v } else { (v - t) + s };
+        (t, c + e)
+    });
+    s + c
+}
+'''
+  expect = ["correct"]
+
+[[problem]]
+id = "fp-stable-variance"
+title = "A sample variance that survives a large mean"
+difficulty = "core"
+kcs = ["cancellation"]
+signature = "pub fn sample_variance(x: &[f64]) -> Option<f64>"
+entry = "sample_variance"
+prompt = '''
+Write `pub fn sample_variance(x: &[f64]) -> Option<f64>` returning the
+sample variance `sum (x_i - mean)² / (n - 1)`, or `None` when `n < 2`.
+It must stay accurate when the mean is large compared with the spread
+(section 3): data near 1e8 with spread 1 is in the tests.
+
+Tolerance: `rtol = 1e-7`, derived. A stable method (two-pass, or Welford's
+update) has relative error about `n κ u`, where `κ = sqrt(1 + n mean²/((n-1) s²))`
+is the condition number of the variance (Chan, Golub & LeVeque 1983). The
+largest `n κ` among the test cases is about 6.4e8 (n = 200, κ ≈ 3.2e6; and
+n = 4, κ ≈ 8.9e7 gives 3.6e8), so `n κ u <= 6.4e8 · 1.1e-16 ≈ 7e-8`.
+The naive formula is wrong by 2% to 60% on those cases (measured).
+'''
+starter = '''
+pub fn sample_variance(x: &[f64]) -> Option<f64> {
+    let n = x.len() as f64;
+    let s: f64 = x.iter().sum();
+    let s2: f64 = x.iter().map(|v| v * v).sum();
+    Some((s2 - s * s / n) / (n - 1.0))
+}
+'''
+reference = '''
+pub fn sample_variance(x: &[f64]) -> Option<f64> {
+    if x.len() < 2 {
+        return None;
+    }
+    let n = x.len() as f64;
+    let mean = x.iter().sum::<f64>() / n;
+    // Corrected two-pass (Bjorck): the second sum removes the first-order
+    // error of the computed mean.
+    let (mut ss, mut comp) = (0.0, 0.0);
+    for &v in x {
+        let d = v - mean;
+        ss += d * d;
+        comp += d;
+    }
+    Some((ss - comp * comp / n) / (n - 1.0))
+}
+'''
+cases = [
+  "&[1.0, 2.0, 3.0, 4.0]",
+  "&[1e8 + 1.0, 1e8 + 2.0, 1e8 + 3.0, 1e8 + 4.0]",
+  "&[5.0]",
+  "&[]",
+  "&[2.0, 2.0, 2.0]",
+  "&(0..200).map(|i| 3e6 + ((i * 7919) % 13) as f64 * 0.25).collect::<Vec<f64>>()",
+]
+rtol = 1e-7
+atol = 1e-300
+hints = [
+  "The starter is the textbook formula. Where does it subtract two large, nearly equal numbers, and how large are they for data near 1e6?",
+  "Compute the mean first, then sum the squares of the deviations `x_i - mean`: the large numbers are never formed. Handle n < 2 before dividing by n - 1.",
+]
+
+  [problem.random]
+  count = 20
+  setup = "let n = rng.range(2, 200); let shift = 10f64.powi(rng.range(0, 7) as i32); let x: Vec<f64> = (0..n).map(|_| shift + rng.normal()).collect();"
+  call = "&x"
+
+  [problem.perf]
+  setup = "let x: Vec<f64> = (0..n).map(|_| 1e3 + rng.normal()).collect();"
+  call = "&x"
+  n = 100000
+
+  [[problem.variant]]
+  label = "Welford's online update"
+  code = '''
+pub fn sample_variance(x: &[f64]) -> Option<f64> {
+    if x.len() < 2 {
+        return None;
+    }
+    let (mut mean, mut m2) = (0.0, 0.0);
+    for (k, &v) in x.iter().enumerate() {
+        let d = v - mean;
+        mean += d / (k + 1) as f64;
+        m2 += d * (v - mean);
+    }
+    Some(m2 / (x.len() - 1) as f64)
+}
+'''
+  expect = ["correct"]
+
+  [[problem.variant]]
+  label = "plain two-pass, with iterators"
+  code = '''
+pub fn sample_variance(x: &[f64]) -> Option<f64> {
+    let n = x.len();
+    if n < 2 {
+        return None;
+    }
+    let mean = x.iter().sum::<f64>() / n as f64;
+    Some(x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64)
+}
+'''
+  expect = ["correct", "fast"]
+
+  [[problem.variant]]
+  label = "naive formula with the n < 2 check"
+  code = '''
+pub fn sample_variance(x: &[f64]) -> Option<f64> {
+    if x.len() < 2 {
+        return None;
+    }
+    let n = x.len() as f64;
+    let s: f64 = x.iter().sum();
+    let s2: f64 = x.iter().map(|v| v * v).sum();
+    Some((s2 - s * s / n) / (n - 1.0))
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "divides by n (population variance)"
+  code = '''
+pub fn sample_variance(x: &[f64]) -> Option<f64> {
+    if x.len() < 2 {
+        return None;
+    }
+    let n = x.len() as f64;
+    let mean = x.iter().sum::<f64>() / n;
+    Some(x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n)
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "collects the deviations into a Vec first"
+  code = '''
+pub fn sample_variance(x: &[f64]) -> Option<f64> {
+    if x.len() < 2 {
+        return None;
+    }
+    let n = x.len() as f64;
+    let mean = x.iter().sum::<f64>() / n;
+    let d: Vec<f64> = x.iter().map(|v| v - mean).collect();
+    Some(d.iter().map(|v| v * v).sum::<f64>() / (n - 1.0))
+}
+'''
+  expect = ["correct", "allocates"]
+
+[[reference]]
+id = "goldberg-1991"
+text = "D. Goldberg, What every computer scientist should know about floating-point arithmetic, ACM Computing Surveys 23(1), 5-48, 1991."
+url = "https://doi.org/10.1145/103162.103163"
+
+[[reference]]
+id = "higham-2002"
+text = "N. J. Higham, Accuracy and Stability of Numerical Algorithms, 2nd ed., SIAM, 2002 (chapter 4, summation)."
+url = "https://doi.org/10.1137/1.9780898718027"
+
+[[reference]]
+id = "kahan-1965"
+text = "W. Kahan, Further remarks on reducing truncation errors, Communications of the ACM 8(1), 40, 1965."
+url = "https://doi.org/10.1145/363707.363723"
+
+[[reference]]
+id = "neumaier-1974"
+text = "A. Neumaier, Rundungsfehleranalyse einiger Verfahren zur Summation endlicher Summen, ZAMM 54(1), 39-51, 1974."
+url = "https://doi.org/10.1002/zamm.19740540106"
+
+[[reference]]
+id = "chan-golub-leveque-1983"
+text = "T. F. Chan, G. H. Golub, R. J. LeVeque, Algorithms for computing the sample variance: analysis and recommendations, The American Statistician 37(3), 242-247, 1983."
+url = "https://doi.org/10.1080/00031305.1983.10483115"

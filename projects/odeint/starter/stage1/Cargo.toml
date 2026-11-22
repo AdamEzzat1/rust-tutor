@@ -1,0 +1,16 @@
+[package]
+name = "odeint"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[profile.test]
+# Tests run with overflow checks and debug assertions (the debug default);
+# stated here so a change of default cannot silently weaken them.
+overflow-checks = true
+debug-assertions = true
+
+# Its own workspace: never a member of the tutor workspace above it.
+[workspace]

@@ -1,0 +1,33 @@
+id = "core"
+title = "Core Rust for scientific computing"
+order = 1
+status = "in progress"
+summary = "Ownership, borrowing and the type system as tools for numerical code: buffers you can prove do not alias, generic kernels that cost nothing, errors as values, and measurements instead of guesses."
+requires = []
+units = ["01-ownership-and-borrowing", "02-traits-and-generics", "03-errors-and-results",
+         "04-iterators-and-closures", "05-crates-modules-testing", "06-measuring-performance",
+         "07-unsafe-and-ffi", "08-threads-and-determinism"]
+projects = ["odeint"]
+
+[[outcome]]
+text = "Predict whether code moves, copies or borrows, and read a borrow-checker error as a statement about aliasing."
+assessed_by = ["01-ownership-and-borrowing", "lesson:L01-moves", "lesson:L02-borrows", "project:odeint"]
+
+[[outcome]]
+text = "Write a numerical kernel generic over a trait (operators on a Copy type), and read a missing-bound error as a statement about the contract."
+assessed_by = ["02-traits-and-generics"]
+
+[[outcome]]
+text = "Show by measurement that a generic kernel costs no more than the hand-specialised version (a timed ratio in one process, labelled machine-dependent)."
+assessed_by = []
+planned = ["06-measuring-performance"]
+
+[[outcome]]
+text = "Write allocation-free inner loops with preallocated workspaces, and prove it with an allocation count."
+assessed_by = ["01-ownership-and-borrowing", "project:odeint"]
+planned = ["06-measuring-performance"]
+
+[[outcome]]
+text = "Report numerical failure as a typed error the caller can handle, not a panic or a silent NaN."
+assessed_by = ["project:odeint"]
+planned = ["03-errors-and-results"]

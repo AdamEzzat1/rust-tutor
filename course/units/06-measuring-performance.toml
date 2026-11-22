@@ -1,0 +1,12 @@
+id = "06-measuring-performance"
+title = "Measuring without fooling yourself"
+track = "core"
+status = "planned"
+summary = """Counting allocations with a global allocator (deterministic), timing with medians and ratios (not deterministic), black_box, release vs debug, and what a benchmark can and cannot claim."""
+outline = [
+  "A counting #[global_allocator]",
+  "Why timings are never in tests",
+  "Ratios to a reference in the same process",
+  "black_box and dead-code elimination",
+  "Problem: make a kernel allocation-free and prove it",
+]

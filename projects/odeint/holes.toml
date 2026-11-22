@@ -1,0 +1,212 @@
+# Holes for the odeint project, in teaching order.
+# stage: a hole is opened in every starter stage >= its stage (fading: more holes later).
+# trivial: plausible-but-wrong bodies (the text between the function's braces).
+#   Each must COMPILE and make at least one test fail (`tutor holemap odeint --check`);
+#   a trivial body that does not compile is an authoring error, not a catch.
+
+project = "odeint"
+crate = "odeint"
+file = "src/lib.rs"
+stages = [1, 2]
+
+[[hole]]
+id = "lincomb"
+stage = 1
+kc = "slices-and-borrows"
+summary = "lincomb(out, y, h, terms): out = y + h * sum c_j k_j, into a borrowed output slice"
+trivial = [
+  "out.copy_from_slice(y);",
+  """
+  for (i, o) in out.iter_mut().enumerate() {
+      let mut acc = 0.0;
+      for (c, k) in terms {
+          acc += c * k[i];
+      }
+      *o = y[i] + acc;
+  }
+  """,
+  """
+  for (i, o) in out.iter_mut().enumerate() {
+      *o = y[i] + h * terms.first().map_or(0.0, |(c, k)| c * k[i]);
+  }
+  """,
+]
+
+[[hole]]
+id = "rk4_step"
+stage = 1
+kc = "split-borrows-and-fnmut"
+measures = ["allocations rk4_step x100"]
+summary = "rk4_step(f, t, y, h, ws): classical RK4 in place, stages in the workspace"
+trivial = [
+  """
+  let k1 = &mut ws.k[0];
+  f(t, y, k1);
+  for i in 0..y.len() {
+      y[i] += h * k1[i];
+  }
+  """,
+  """
+  let [k1, k2, k3, k4, ..] = &mut ws.k;
+  let tmp = &mut ws.ytmp;
+  f(t, y, k1);
+  lincomb(tmp, y, h, &[(0.5, k1)]);
+  f(t + 0.5 * h, tmp, k2);
+  lincomb(tmp, y, h, &[(0.5, k2)]);
+  f(t + 0.5 * h, tmp, k3);
+  lincomb(tmp, y, h, &[(1.0, k3)]);
+  f(t + h, tmp, k4);
+  for i in 0..y.len() {
+      y[i] += h * (k1[i] + k2[i] + k3[i] + k4[i]) / 4.0;
+  }
+  """,
+  """
+  let [k1, k2, ..] = &mut ws.k;
+  let tmp = &mut ws.ytmp;
+  f(t, y, k1);
+  lincomb(tmp, y, h, &[(0.5, k1)]);
+  f(t + 0.5 * h, tmp, k2);
+  for i in 0..y.len() {
+      y[i] += h * k2[i];
+  }
+  """,
+]
+
+[[hole]]
+id = "error_norm"
+stage = 1
+kc = "iterator-adaptors"
+summary = "error_norm(err, y0, y1, atol, rtol): the scaled RMS norm for step acceptance"
+trivial = [
+  "0.0",
+  """
+  err.iter()
+      .zip(y0)
+      .zip(y1)
+      .map(|((e, a), b)| (e / (atol + rtol * a.abs().max(b.abs()))).abs())
+      .fold(0.0, f64::max)
+  """,
+  """
+  let n = err.len();
+  if n == 0 {
+      return 0.0;
+  }
+  let s: f64 = err.iter().zip(y0).map(|(e, a)| (e / (atol + rtol * a.abs())).powi(2)).sum();
+  (s / n as f64).sqrt()
+  """,
+  """
+  let s: f64 = err
+      .iter()
+      .zip(y0)
+      .zip(y1)
+      .map(|((e, a), b)| (e / (atol + rtol * a.abs().max(b.abs()))).powi(2))
+      .sum();
+  s.sqrt()
+  """,
+]
+
+[[hole]]
+id = "fit_order"
+stage = 1
+kc = "convergence-order"
+summary = "fit_order(hs, errs): least-squares slope of ln e against ln h, or None"
+trivial = [
+  "None",
+  "Some(4.0)",
+  """
+  if hs.len() < 2 || hs.len() != errs.len() {
+      return None;
+  }
+  let n = hs.len();
+  Some((errs[n - 1].ln() - errs[0].ln()) / (hs[n - 1].ln() - hs[0].ln()))
+  """,
+]
+
+[[hole]]
+id = "dopri_step"
+stage = 2
+kc = "split-borrows-split-at-mut"
+measures = ["allocations dopri_step x100"]
+summary = "dopri_step(f, t, y, h, ws): one Dormand-Prince 5(4) step into ws.ynew and ws.err"
+trivial = [
+  """
+  ws.ynew.copy_from_slice(y);
+  ws.err.fill(0.0);
+  """,
+  """
+  f(t, y, &mut ws.k[0]);
+  for i in 0..y.len() {
+      ws.ynew[i] = y[i] + h * ws.k[0][i];
+      ws.err[i] = 0.0;
+  }
+  """,
+  """
+  use tableau::{A, B5, E};
+  let Workspace { k, ytmp, ynew, err } = ws;
+  f(t, y, &mut k[0]);
+  for s in 1..7 {
+      let (done, rest) = k.split_at_mut(s);
+      ytmp.copy_from_slice(y);
+      for (j, kj) in done.iter().enumerate() {
+          let a = h * A[s][j];
+          for (t, kv) in ytmp.iter_mut().zip(kj) {
+              *t += a * kv;
+          }
+      }
+      f(t, ytmp, &mut rest[0]);
+  }
+  ynew.copy_from_slice(y);
+  err.fill(0.0);
+  for (j, kj) in k.iter().enumerate() {
+      let (b, e) = (h * B5[j], h * E[j]);
+      for ((yn, er), kv) in ynew.iter_mut().zip(err.iter_mut()).zip(kj) {
+          *yn += b * kv;
+          *er += e * kv;
+      }
+  }
+  """,
+]
+
+[[hole]]
+id = "next_step_size"
+stage = 2
+kc = "step-size-control"
+measures = ["steps integrate(oscillator, 0..10, tol 1e-8)"]
+summary = "next_step_size(h, err, fac_max): safety factor, err^(-1/5), clamped"
+trivial = [
+  "h",
+  "h * SAFETY * err.powf(-1.0 / 5.0)",
+  """
+  if err == 0.0 {
+      return h * fac_max;
+  }
+  h * (SAFETY * err.powf(-1.0 / 4.0)).clamp(FAC_MIN, fac_max)
+  """,
+]
+
+[[hole]]
+id = "integrate"
+stage = 2
+kc = "result-error-handling"
+measures = ["allocations integrate(oscillator, 0..10)", "steps integrate(oscillator, 0..10, tol 1e-8)"]
+summary = "integrate(f, t0, t_end, y, opts, ws): the adaptive driver, errors as Result"
+trivial = [
+  "Ok(Stats { accepted: 0, rejected: 0, evals: 0, t_final: t_end })",
+  """
+  let mut t = t0;
+  let mut h = opts.h0.unwrap_or(1e-3);
+  let mut stats = Stats { accepted: 0, rejected: 0, evals: 0, t_final: t0 };
+  while t < t_end {
+      if t + h > t_end {
+          h = t_end - t;
+      }
+      dopri_step(f, t, y, h, ws);
+      y.copy_from_slice(&ws.ynew);
+      t += h;
+      stats.accepted += 1;
+      stats.evals += 7;
+  }
+  stats.t_final = t;
+  Ok(stats)
+  """,
+]

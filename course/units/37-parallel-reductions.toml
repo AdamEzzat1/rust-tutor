@@ -1,0 +1,11 @@
+id = "37-parallel-reductions"
+title = "Parallel reductions you can reproduce"
+track = "scicomp"
+status = "planned"
+summary = """Amdahl's law measured, chunked parallel loops with thread::scope, and reproducible sums (fixed-tree and compensated) that do not change with the thread count."""
+outline = [
+  "Amdahl and the serial fraction",
+  "Chunking and false sharing",
+  "Reproducible summation",
+  "Problem: a matrix-vector product, parallel and bit-reproducible",
+]

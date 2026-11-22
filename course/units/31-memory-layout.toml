@@ -1,0 +1,384 @@
+id = "31-memory-layout"
+title = "Memory layout, strides and loop order"
+track = "scicomp"
+status = "ready"
+summary = "Where the numbers actually are. A matrix stored as one flat row-major Vec, the index map and its stride, why loop order changes speed but not (here) the answer, Vec<Vec<f64>> versus flat storage, and how Rust lays out structs. What is measured deterministically (layout, allocations) is kept apart from what is not (timings)."
+kcs = ["row-major-layout", "stride-and-loop-order", "flat-vs-nested-storage", "struct-layout"]
+prerequisites = ["core/01-ownership-and-borrowing", "30-floating-point"]
+
+[[section]]
+title = "A matrix is a slice and an index map"
+refs = ["drepper-2007", "rust-std-chunks-exact"]
+body = '''
+Memory is one-dimensional. A `rows × cols` matrix stored **row-major** in a
+`Vec<f64>` puts element `(i, j)` at index `i * cols + j`: moving along a row
+(`j + 1`) moves 8 bytes, moving down a column (`i + 1`) moves `8 * cols`
+bytes. That step is the **stride**. Column-major storage (Fortran, Julia,
+LAPACK) is the transpose: `i + j * rows`.
+
+Hardware loads memory in cache lines (64 bytes, 8 `f64`s, on current x86-64
+and ARM). A unit-stride loop uses every value of every line it loads, and the
+prefetcher sees it coming. A loop with stride `8 * cols` bytes uses one value
+per line, and when the matrix is larger than the cache each line is evicted
+before the loop comes back for its neighbours.
+
+In Rust, `chunks_exact(cols)` hands out the rows of a row-major matrix as
+slices: each row is contiguous, so a loop over a row is unit stride and the
+bounds check is hoisted out.
+'''
+
+  [[section.example]]
+  caption = "Byte distance between neighbours in a 3 x 4 row-major matrix."
+  notice = "Notice that a step along a row is 8 bytes and a step down a column is 32 bytes (4 columns of 8 bytes)."
+  code = '''
+let (rows, cols) = (3, 4);
+let a: Vec<f64> = (0..rows * cols).map(|k| k as f64).collect();
+let at = |i: usize, j: usize| &a[i * cols + j] as *const f64 as usize;
+println!("along a row:   {} bytes", at(1, 2) - at(1, 1));
+println!("down a column: {} bytes", at(2, 1) - at(1, 1));
+for row in a.chunks_exact(cols) {
+    println!("{row:?}");
+}
+'''
+
+  [[section.analogy]]
+  title = "Reading a book across or down"
+  text = '''
+A row-major matrix is a book: words run along the line, lines run down the
+page. Reading along a line (unit stride) is fast because your eye takes in a
+whole phrase at once (a cache line). Reading the first word of every line,
+then the second word of every line, means jumping a full line each time and
+re-finding your place: the same words, read much more slowly.
+'''
+  breaks = '''
+A reader remembers the whole page; a cache holds a fixed number of lines and
+evicts old ones, so the strided order is only slow once the matrix no longer
+fits (for a small matrix both orders are about as fast). And a reader cannot
+read two words at once; the CPU can (SIMD), which favours the unit-stride
+order even more.
+'''
+
+[[section]]
+title = "Loop order changes speed; here it does not change the answer"
+refs = ["drepper-2007", "goldberg-1991-layout"]
+body = '''
+Column sums of a row-major matrix can be written two ways. **Column by
+column** (`for j { for i { out[j] += a[i*cols + j] } }`) has a stride of
+`cols` in the inner loop. **Row by row** (`for row in chunks_exact(cols) {
+for (o, x) in out.iter_mut().zip(row) { *o += x } }`) is unit stride in the
+inner loop and touches `out` (small, always in cache) instead.
+
+Both orders add the elements of each column in the same order (row 0, row 1,
+...), so they produce **bit-identical** results. That is not true of every
+reordering: a reordering that changes the order of the additions *within*
+one sum (pairwise or SIMD-lane sums) changes the last digits (unit 30).
+
+How much faster the unit-stride order is depends on the machine (cache
+sizes, prefetchers, memory bandwidth). It is measured below by the practice
+grader as a ratio to the reference in one process; it is never asserted in
+a test.
+'''
+
+  [[section.example]]
+  caption = "Both loop orders on a 300 x 200 matrix of non-representable decimals."
+  notice = "Notice that the two results are bit-identical, element by element: same additions, same order, different memory traffic."
+  code = '''
+fn by_column(a: &[f64], rows: usize, cols: usize, out: &mut [f64]) {
+    for j in 0..cols {
+        let mut s = 0.0;
+        for i in 0..rows {
+            s += a[i * cols + j];
+        }
+        out[j] = s;
+    }
+}
+fn by_row(a: &[f64], cols: usize, out: &mut [f64]) {
+    out.fill(0.0);
+    for row in a.chunks_exact(cols) {
+        for (o, x) in out.iter_mut().zip(row) {
+            *o += x;
+        }
+    }
+}
+fn main() {
+    let (rows, cols) = (300, 200);
+    let a: Vec<f64> = (0..rows * cols).map(|k| 0.1 * (k % 97) as f64).collect();
+    let (mut c, mut r) = (vec![0.0; cols], vec![0.0; cols]);
+    by_column(&a, rows, cols, &mut c);
+    by_row(&a, cols, &mut r);
+    let same = c.iter().zip(&r).all(|(x, y)| x.to_bits() == y.to_bits());
+    println!("bit-identical: {same}");
+    println!("out[7] = {:?}", r[7]);
+}
+'''
+
+[[section]]
+title = "Vec<Vec<f64>> and struct layout"
+refs = ["rust-reference-type-layout"]
+body = '''
+A `Vec<Vec<f64>>` is a vector of (pointer, length, capacity) triples, each
+pointing at its own heap block: `rows + 1` allocations, rows that need not
+be adjacent, a second pointer chase on every access, and nothing stopping
+rows from having different lengths. One flat `Vec<f64>` plus `cols` is one
+allocation with a known shape. Nested vectors are fine for ragged data;
+for a matrix, use flat storage.
+
+Rust's default struct layout (`repr(Rust)`) may **reorder fields** to
+reduce padding; `#[repr(C)]` keeps declaration order, as C does, and pads
+each field to its alignment. A struct of a `u8`, an `f64` and a `u8` is 16
+bytes by default and 24 bytes as `repr(C)`. Use `repr(C)` only when the
+layout must match C (FFI) or a file format; otherwise let the compiler
+choose.
+'''
+
+  [[section.example]]
+  caption = "Allocations for a 100 x 100 matrix, nested versus flat, counted by a global allocator."
+  notice = "Notice that the nested version makes 101 allocations and the flat one makes 1."
+  code = '''
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+struct Counting;
+static COUNT: AtomicUsize = AtomicUsize::new(0);
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        COUNT.fetch_add(1, Ordering::Relaxed);
+        unsafe { System.alloc(l) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        unsafe { System.dealloc(p, l) }
+    }
+}
+#[global_allocator]
+static A: Counting = Counting;
+fn main() {
+    let c0 = COUNT.load(Ordering::Relaxed);
+    let nested: Vec<Vec<f64>> = (0..100).map(|_| vec![0.0; 100]).collect();
+    let c1 = COUNT.load(Ordering::Relaxed);
+    let flat: Vec<f64> = vec![0.0; 100 * 100];
+    let c2 = COUNT.load(Ordering::Relaxed);
+    println!("nested: {} allocations", c1 - c0);
+    println!("flat:   {} allocations", c2 - c1);
+    std::hint::black_box((&nested, &flat));
+}
+'''
+
+[[question]]
+id = "repr-c-size"
+kind = "output"
+prompt = "What is printed?"
+code = '''
+#[allow(dead_code)]
+struct R { a: u8, b: f64, c: u8 }
+#[allow(dead_code)]
+#[repr(C)]
+struct C { a: u8, b: f64, c: u8 }
+fn main() {
+    println!("{} {}", std::mem::size_of::<R>(), std::mem::size_of::<C>());
+}
+'''
+options = ["10 10", "24 24", "16 24", "16 16"]
+answer = 3
+explanation = "repr(C) keeps the order a, b, c: 1 byte, 7 bytes of padding so b is 8-aligned, 8 bytes, 1 byte, and 7 more so the size is a multiple of 8: 24. The default layout may put b first and pack a and c after it: 8 + 1 + 1, rounded up to 16."
+
+  [[question.misconception]]
+  option = 1
+  id = "no-padding"
+  feedback = "Fields are aligned: an f64 must start at a multiple of 8 bytes, and the struct's size is a multiple of its alignment."
+
+  [[question.misconception]]
+  option = 2
+  id = "rust-layout-is-c"
+  feedback = "Without #[repr(C)], Rust is free to reorder fields, and here it does, to save 8 bytes."
+
+  [[question.misconception]]
+  option = 4
+  id = "repr-c-reorders"
+  feedback = "repr(C) promises declaration order, which is what forces the padding."
+
+[[question]]
+id = "why-strided-slow"
+kind = "choice"
+prompt = "Summing columns of a 2000 x 2000 row-major f64 matrix column by column is slower than row by row. Why?"
+options = [
+  "Each inner-loop step jumps 16000 bytes, so each cache line loaded yields one useful value and is evicted before its neighbours are needed",
+  "The column-by-column version performs more floating-point additions",
+  "Bounds checks are only emitted for strided indexing",
+  "Column-by-column summation is less accurate, and the hardware slows down to compensate",
+]
+answer = 1
+explanation = "Both do rows x cols additions in the same order. The difference is memory traffic: unit stride uses all 8 values of each 64-byte line; stride 2000 uses one, and a 32 MB matrix does not fit in cache."
+
+  [[question.misconception]]
+  option = 2
+  id = "more-flops"
+  feedback = "The operation count is identical; only the order of memory accesses differs."
+
+  [[question.misconception]]
+  option = 3
+  id = "bounds-checks-dominate"
+  feedback = "Bounds checks cost a compare and a predictable branch; the miss to main memory costs a hundred or more cycles."
+
+  [[question.misconception]]
+  option = 4
+  id = "order-changes-accuracy"
+  feedback = "Here each column is summed in the same order either way: the results are bit-identical (section 2)."
+
+[[problem]]
+id = "layout-column-sums"
+title = "Column sums of a row-major matrix, at unit stride"
+difficulty = "core"
+kcs = ["stride-and-loop-order", "row-major-layout"]
+signature = "pub fn column_sums(a: &[f64], rows: usize, cols: usize, out: &mut [f64])"
+entry = "column_sums"
+prompt = '''
+`a` holds a `rows × cols` matrix in row-major order (`a.len() == rows * cols`)
+and `out.len() == cols`. Write
+
+    pub fn column_sums(a: &[f64], rows: usize, cols: usize, out: &mut [f64])
+
+that sets `out[j]` to the sum of column `j`, adding rows in order 0, 1, 2,
+... (the same order as the reference, so results agree bit for bit; the
+tolerance `rtol = 1e-12` only absorbs harmless reformulations). Whatever is
+in `out` on entry must be overwritten. A matrix with zero rows has column
+sums of zero. Allocate nothing.
+
+Speed is graded as a ratio to the reference on a 2000 × 2000 matrix
+(32 MB, larger than the caches of the machines this was measured on), in
+the same process. The starter is correct; make it fast.
+'''
+starter = '''
+pub fn column_sums(a: &[f64], rows: usize, cols: usize, out: &mut [f64]) {
+    for j in 0..cols {
+        let mut s = 0.0;
+        for i in 0..rows {
+            s += a[i * cols + j];
+        }
+        out[j] = s;
+    }
+}
+'''
+# Measured on the authoring machine (2026-11-22, rustc 1.97.1): 8.05x, 9.32x,
+# 8.80x the reference in three runs. Timed verdicts vary by machine; a
+# machine whose caches hold 32 MB would not reproduce this.
+starter_expect = ["correct", "slow"]
+reference = '''
+pub fn column_sums(a: &[f64], rows: usize, cols: usize, out: &mut [f64]) {
+    debug_assert_eq!(a.len(), rows * cols);
+    out.fill(0.0);
+    if cols == 0 {
+        return;
+    }
+    for row in a.chunks_exact(cols) {
+        for (o, x) in out.iter_mut().zip(row) {
+            *o += x;
+        }
+    }
+}
+'''
+cases = [
+  "{ let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; let mut out = vec![9.0; 3]; F(&a, 2, 3, &mut out); out }",
+  "{ let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; let mut out = vec![9.0; 2]; F(&a, 3, 2, &mut out); out }",
+  "{ let a: Vec<f64> = vec![]; let mut out = vec![9.0; 4]; F(&a, 0, 4, &mut out); out }",
+  "{ let a = vec![0.1; 7]; let mut out = vec![0.0; 1]; F(&a, 7, 1, &mut out); out }",
+  "{ let a: Vec<f64> = vec![]; let mut out: Vec<f64> = vec![]; F(&a, 5, 0, &mut out); out }",
+  "{ let a: Vec<f64> = (0..60000).map(|k| 0.1 * (k % 97) as f64).collect(); let mut out = vec![0.0; 200]; F(&a, 300, 200, &mut out); out }",
+]
+rtol = 1e-12
+hints = [
+  "The starter's inner loop moves down a column: each step jumps `cols` elements. Which loop order makes the inner loop walk through memory one element at a time?",
+  "Zero `out`, then walk the rows with `a.chunks_exact(cols)` and add each row into `out` with `out.iter_mut().zip(row)`. Guard `cols == 0` (chunks_exact panics on a chunk size of 0).",
+]
+
+  [problem.random]
+  count = 15
+  setup = "let rows = rng.range(0, 40); let cols = rng.range(1, 40); let a: Vec<f64> = (0..rows * cols).map(|_| rng.normal()).collect();"
+  call = "{ let mut out = vec![1.0; cols]; F(&a, rows, cols, &mut out); out }"
+
+  [problem.perf]
+  setup = "let a: Vec<f64> = (0..n * n).map(|_| rng.f64()).collect(); let mut out = vec![0.0; n];"
+  call = "&a, n, n, &mut out"
+  n = 2000
+
+  [[problem.variant]]
+  label = "row by row with explicit indices (unit stride, bounds-checked)"
+  code = '''
+pub fn column_sums(a: &[f64], rows: usize, cols: usize, out: &mut [f64]) {
+    for j in 0..cols {
+        out[j] = 0.0;
+    }
+    for i in 0..rows {
+        for j in 0..cols {
+            out[j] += a[i * cols + j];
+        }
+    }
+}
+'''
+  expect = ["correct"]
+
+  [[problem.variant]]
+  label = "forgets to zero out"
+  code = '''
+pub fn column_sums(a: &[f64], _rows: usize, cols: usize, out: &mut [f64]) {
+    if cols == 0 {
+        return;
+    }
+    for row in a.chunks_exact(cols) {
+        for (o, x) in out.iter_mut().zip(row) {
+            *o += x;
+        }
+    }
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "builds Vec<Vec<f64>> rows first"
+  code = '''
+pub fn column_sums(a: &[f64], _rows: usize, cols: usize, out: &mut [f64]) {
+    out.fill(0.0);
+    if cols == 0 {
+        return;
+    }
+    let m: Vec<Vec<f64>> = a.chunks_exact(cols).map(|r| r.to_vec()).collect();
+    for row in &m {
+        for (o, x) in out.iter_mut().zip(row) {
+            *o += x;
+        }
+    }
+}
+'''
+  expect = ["correct", "allocates"]
+
+  [[problem.variant]]
+  label = "no guard for cols == 0: chunks_exact(0) panics"
+  code = '''
+pub fn column_sums(a: &[f64], _rows: usize, cols: usize, out: &mut [f64]) {
+    out.fill(0.0);
+    for row in a.chunks_exact(cols) {
+        for (o, x) in out.iter_mut().zip(row) {
+            *o += x;
+        }
+    }
+}
+'''
+  expect = ["incorrect"]
+
+[[reference]]
+id = "drepper-2007"
+text = "U. Drepper, What Every Programmer Should Know About Memory, 2007 (sections 3 and 6)."
+url = "https://people.freebsd.org/~lstewart/articles/cpumemory.pdf"
+
+[[reference]]
+id = "rust-std-chunks-exact"
+text = "The Rust Standard Library: slice::chunks_exact."
+url = "https://doc.rust-lang.org/std/primitive.slice.html#method.chunks_exact"
+
+[[reference]]
+id = "rust-reference-type-layout"
+text = "The Rust Reference: Type layout (repr(Rust) and repr(C))."
+url = "https://doc.rust-lang.org/reference/type-layout.html"
+
+[[reference]]
+id = "goldberg-1991-layout"
+text = "D. Goldberg, What every computer scientist should know about floating-point arithmetic, ACM Computing Surveys 23(1), 1991 (on the order of additions)."
+url = "https://doi.org/10.1145/103162.103163"

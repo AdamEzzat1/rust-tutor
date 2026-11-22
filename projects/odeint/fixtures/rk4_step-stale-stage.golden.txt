@@ -1,0 +1,28 @@
+== tutor explain: odeint, stage 1 ==
+
+Start here: hole `rk4_step` at src/lib.rs:159
+  why: 3 of the 3 failing tests depend on it (Ochiai 0.71); 3 of its dependent tests pass.
+  Read its doc comment: it is the specification. Knowledge component: split-borrows-and-fnmut.
+
+Tests: 38/41 pass
+  FAIL behaviour::rk4::one_step_matches_taylor  [depends on: lincomb, rk4_step]
+       tests/behaviour.rs:117: y = 0.9049166666666667, want 0.9048375000000001
+  FAIL behaviour::rk4::order_is_four  [depends on: lincomb, rk4_step]
+       tests/behaviour.rs:146: fitted order 2.0162743734767568, errors [0.0003223279052286254, 7.858471916005749e-5, 1.940158868729558e-5, 4.820141023376134e-6, 1.2012731127053478e-6]
+  FAIL behaviour::rk4::oscillator_keeps_phase  [depends on: lincomb, rk4_step]
+       tests/behaviour.rs:157: error 0.006675316683655245
+
+Holes at stage 1 (ranked by sole-cause evidence, then Ochiai over the measured test-to-hole map):
+  1. rk4_step    0.71  implemented  failing-deps=3 passing-deps=3 sole=0  src/lib.rs:159
+  2. lincomb     0.52  implemented  failing-deps=3 passing-deps=8 sole=0  src/lib.rs:133
+  3. error_norm  0.00  implemented  failing-deps=0 passing-deps=16 sole=0  src/lib.rs:192
+  4. fit_order   0.00  implemented  failing-deps=0 passing-deps=3 sole=0  src/lib.rs:221
+
+Static findings (0):
+  none
+
+Measurements (release build, counting global allocator, deterministic):
+  allocations rk4_step x100: 0  (reference 0)
+  allocations dopri_step x100: 0  (reference 0)
+  allocations integrate(oscillator, 0..10): 0  (reference 0)
+  steps integrate(oscillator, 0..10, tol 1e-8): accepted 95 rejected 0 evals 666  (reference accepted 95 rejected 0 evals 666)

@@ -1,0 +1,12 @@
+id = "07-unsafe-and-ffi"
+title = "unsafe and calling C"
+track = "core"
+status = "planned"
+summary = """What `unsafe` permits and what it does not, `get_unchecked` with a stated invariant, `extern "C"` to a BLAS-like routine, and Miri as the measurement for undefined behaviour."""
+outline = [
+  "The five unsafe superpowers",
+  "Bounds-check elimination without unsafe",
+  "An invariant comment for every unsafe block",
+  "FFI to a C dot product",
+  "Miri (nightly) as a measurement, not a rule",
+]

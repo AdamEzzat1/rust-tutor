@@ -1,0 +1,34 @@
+id = "scicomp"
+title = "Scientific computing in Rust"
+order = 2
+status = "in progress"
+summary = "Numerical methods you can check: floating point and conditioning, memory layout, convergence-order verification, linear solvers, stiffness, PDEs and reproducible parallelism, all std-only first, then the ecosystem."
+requires = ["core"]
+units = ["30-floating-point", "31-memory-layout", "32-convergence-and-verification",
+         "33-dense-linear-algebra", "34-sparse-iterative", "35-stiffness-and-implicit-methods",
+         "36-finite-volume-pde", "37-parallel-reductions", "38-simd-and-autovectorization",
+         "39-ecosystem-survey"]
+projects = ["odeint"]
+
+[[outcome]]
+text = "Predict and measure the effect of rounding and conditioning on a result, and choose a summation or variance algorithm accordingly."
+assessed_by = ["30-floating-point", "lesson:L03-float-traps"]
+
+[[outcome]]
+text = "Choose a data layout and loop order from the access pattern, and know which part of that is measurable deterministically (allocations) and which is not (cache timing)."
+assessed_by = ["31-memory-layout"]
+
+[[outcome]]
+text = "Measure the convergence order of a method and use it to verify code."
+assessed_by = ["project:odeint"]
+planned = ["32-convergence-and-verification"]
+
+[[outcome]]
+text = "Choose a linear solver or ODE method and justify the choice with measurements."
+assessed_by = ["project:odeint"]
+planned = ["33-dense-linear-algebra", "34-sparse-iterative", "35-stiffness-and-implicit-methods"]
+
+[[outcome]]
+text = "Make a parallel computation reproducible: same result, bit for bit, for any thread count."
+assessed_by = []
+planned = ["37-parallel-reductions"]

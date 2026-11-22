@@ -1,0 +1,218 @@
+# Explain fixtures: one realistic bug per hole (plus a compile error), put
+# into the reference at the given stage. `tutor fixtures odeint --check`
+# re-runs explain on each and compares with fixtures/<name>.golden.txt.
+# Each fixture's explain output must start at its own hole.
+
+[[fixture]]
+name = "lincomb-forgets-h"
+stage = 1
+hole = "lincomb"
+bug = "forgets to multiply the combination by h"
+body = '''
+assert_eq!(out.len(), y.len(), "lincomb: out and y differ in length");
+for (_, k) in terms {
+    assert_eq!(k.len(), out.len(), "lincomb: a term differs in length");
+}
+for (i, o) in out.iter_mut().enumerate() {
+    let mut acc = 0.0;
+    for (c, k) in terms {
+        acc += c * k[i];
+    }
+    *o = y[i] + acc;
+}
+'''
+
+[[fixture]]
+name = "rk4_step-stale-stage"
+stage = 1
+hole = "rk4_step"
+bug = "builds the third stage from k1 instead of k2"
+body = '''
+let [k1, k2, k3, k4, ..] = &mut ws.k;
+let tmp = &mut ws.ytmp;
+f(t, y, k1);
+lincomb(tmp, y, h, &[(0.5, k1)]);
+f(t + 0.5 * h, tmp, k2);
+lincomb(tmp, y, h, &[(0.5, k1)]);
+f(t + 0.5 * h, tmp, k3);
+lincomb(tmp, y, h, &[(1.0, k3)]);
+f(t + h, tmp, k4);
+for i in 0..y.len() {
+    y[i] += h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
+}
+'''
+
+[[fixture]]
+name = "rk4_step-double-borrow"
+stage = 1
+hole = "rk4_step"
+bug = "borrows ws.k again while the destructured stages are alive (does not compile)"
+body = '''
+let [k1, k2, k3, k4, ..] = &mut ws.k;
+let tmp = &mut ws.ytmp;
+f(t, y, k1);
+lincomb(tmp, y, h, &[(0.5, k1)]);
+let k1 = &mut ws.k[0];
+f(t + 0.5 * h, tmp, k2);
+lincomb(tmp, y, h, &[(0.5, k2)]);
+f(t + 0.5 * h, tmp, k3);
+lincomb(tmp, y, h, &[(1.0, k3)]);
+f(t + h, tmp, k4);
+for i in 0..y.len() {
+    y[i] += h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
+}
+'''
+
+[[fixture]]
+name = "error_norm-max-norm"
+stage = 1
+hole = "error_norm"
+bug = "uses the max norm (and f64::max silently drops NaN)"
+body = '''
+err.iter()
+    .zip(y0)
+    .zip(y1)
+    .map(|((e, a), b)| (e / (atol + rtol * a.abs().max(b.abs()))).abs())
+    .fold(0.0, f64::max)
+'''
+
+[[fixture]]
+name = "fit_order-swapped-axes"
+stage = 1
+hole = "fit_order"
+bug = "regresses ln h on ln e: returns 1/p"
+body = '''
+if hs.len() != errs.len() || hs.len() < 2 {
+    return None;
+}
+if hs.iter().chain(errs).any(|v| !(v.is_finite() && *v > 0.0)) {
+    return None;
+}
+let n = hs.len() as f64;
+let mx = hs.iter().map(|h| h.ln()).sum::<f64>() / n;
+let mz = errs.iter().map(|e| e.ln()).sum::<f64>() / n;
+let mut sxz = 0.0;
+let mut sxx = 0.0;
+for (h, e) in hs.iter().zip(errs) {
+    let dz = e.ln() - mz;
+    sxz += (h.ln() - mx) * dz;
+    sxx += dz * dz;
+}
+if sxx == 0.0 {
+    return None;
+}
+Some(sxz / sxx)
+'''
+
+[[fixture]]
+name = "dopri_step-ignores-nodes"
+stage = 2
+hole = "dopri_step"
+bug = "evaluates every stage at t instead of t + c_i h"
+body = '''
+use tableau::{A, B5, E};
+let Workspace { k, ytmp, ynew, err } = ws;
+f(t, y, &mut k[0]);
+for s in 1..7 {
+    // Stages 0..s are read while stage s is written: split the array.
+    let (done, rest) = k.split_at_mut(s);
+    ytmp.copy_from_slice(y);
+    for (j, kj) in done.iter().enumerate() {
+        let a = h * A[s][j];
+        for (t, kv) in ytmp.iter_mut().zip(kj) {
+            *t += a * kv;
+        }
+    }
+    f(t, ytmp, &mut rest[0]);
+}
+// Stage-major accumulation: the inner loop walks each k_j with unit stride.
+ynew.copy_from_slice(y);
+err.fill(0.0);
+for (j, kj) in k.iter().enumerate() {
+    let (b, e) = (h * B5[j], h * E[j]);
+    for ((yn, er), kv) in ynew.iter_mut().zip(err.iter_mut()).zip(kj) {
+        *yn += b * kv;
+        *er += e * kv;
+    }
+}
+'''
+
+[[fixture]]
+name = "next_step_size-exponent"
+stage = 2
+hole = "next_step_size"
+bug = "uses exponent 1/4 (the higher order) instead of 1/5"
+body = '''
+if err == 0.0 {
+    return h * fac_max;
+}
+let fac = SAFETY * err.powf(-1.0 / 4.0);
+h * fac.clamp(FAC_MIN, fac_max)
+'''
+
+[[fixture]]
+name = "integrate-advances-on-reject"
+stage = 2
+hole = "integrate"
+bug = "copies ynew and advances t even when the step is rejected"
+body = '''
+if !(t0.is_finite() && t_end.is_finite()) || t_end < t0 {
+    return Err(OdeError::InvalidSpan);
+}
+if y.len() != ws.dim() {
+    return Err(OdeError::DimensionMismatch { y: y.len(), workspace: ws.dim() });
+}
+let mut evals = 0usize;
+let mut g = |t: f64, y: &[f64], dy: &mut [f64]| {
+    evals += 1;
+    f(t, y, dy)
+};
+let mut stats = Stats { accepted: 0, rejected: 0, evals: 0, t_final: t0 };
+let mut t = t0;
+if t0 == t_end {
+    return Ok(stats);
+}
+let mut h = match opts.h0 {
+    Some(h0) => h0,
+    None => initial_step(&mut g, t0, t_end, y, opts, ws),
+};
+let mut last_rejected = false;
+let mut result = Ok(());
+while t < t_end {
+    if stats.accepted + stats.rejected >= opts.max_steps {
+        result = Err(OdeError::MaxSteps { t });
+        break;
+    }
+    let h_min = opts.h_min_rel * t.abs() + f64::MIN_POSITIVE;
+    if h < h_min {
+        result = Err(OdeError::StepTooSmall { t, h });
+        break;
+    }
+    let last = h >= t_end - t;
+    if last {
+        h = t_end - t;
+    }
+    dopri_step(&mut g, t, y, h, ws);
+    let norm = error_norm(&ws.err, y, &ws.ynew, opts.atol, opts.rtol);
+    if !norm.is_finite() {
+        result = Err(OdeError::NonFinite { t });
+        break;
+    }
+    if norm <= 1.0 {
+        y.copy_from_slice(&ws.ynew);
+        t = if last { t_end } else { t + h };
+        stats.accepted += 1;
+        h = next_step_size(h, norm, if last_rejected { 1.0 } else { FAC_MAX });
+        last_rejected = false;
+    } else {
+        y.copy_from_slice(&ws.ynew);
+        t += h;
+        stats.rejected += 1;
+        h = next_step_size(h, norm, 1.0);
+        last_rejected = true;
+    }
+}
+stats.t_final = t;
+stats.evals = evals;
+result.map(|()| stats)
+'''

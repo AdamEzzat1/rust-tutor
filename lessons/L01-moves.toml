@@ -1,0 +1,114 @@
+id = "L01-moves"
+title = "Moves, copies and clones: who owns the buffer"
+kcs = ["ownership-moves"]
+prerequisites = []
+# Answer keys verified by `tutor lessons verify` on this exact release.
+verified_on = "1.97.1"
+
+body = '''
+Every value in Rust has one owner. Assigning a `Vec<f64>` to another
+variable, or passing it to a function by value, *moves* it: the bytes of the
+handle (pointer, length, capacity) are copied, the heap buffer is not, and
+the old name may no longer be used. The compiler checks this; a use after a
+move is the error E0382, not a crash at run time.
+
+Types that are cheap to duplicate bit for bit and own nothing on the heap
+(`f64`, `usize`, `[f64; 3]`, tuples of those) are `Copy`: assignment copies
+them, and both names stay usable. `.clone()` makes an explicit deep copy of
+anything that implements `Clone`, including a `Vec`; it costs an allocation.
+
+Habits that do not transfer: in R and MATLAB `b = a` copies the data; in
+Python and Julia it binds a second name to the same object. In Rust it
+moves, and the compiler tells you when you relied on either habit.
+'''
+
+[[check]]
+id = "use-after-move"
+prompt = "A vector is assigned to a second name. What happens?"
+code = '''
+let v = vec![1.0, 2.0];
+let w = v;
+println!("{} {}", v.len(), w.len());
+'''
+options = ["2 2", "compile error E0382", "0 2", "compile error E0499"]
+answer = 2
+hint = "After `let w = v;`, how many owners can the heap buffer have, and which of the two names is it?"
+explanation = "`let w = v;` moves the vector into `w`; using `v` afterwards is E0382 (borrow of moved value). To keep both, write `let w = v.clone();` and pay for a copy, or borrow: `let w = &v;`."
+
+  [[check.misconception]]
+  option = 1
+  id = "assignment-copies"
+  feedback = "That is R or MATLAB semantics (copy on assign). Rust moves non-`Copy` values; a deep copy is always the explicit `.clone()`."
+
+  [[check.misconception]]
+  option = 3
+  id = "move-empties-source"
+  feedback = "A move does not leave an empty vector behind that you can still read (that is C++'s moved-from state). The old name is simply unusable, and the compiler enforces it."
+
+  [[check.misconception]]
+  option = 4
+  id = "move-is-a-borrow"
+  feedback = "E0499 is two simultaneous `&mut` borrows. No borrow happens here: ownership is transferred."
+
+[[check]]
+id = "arrays-are-copy"
+prompt = "A fixed-size array of floats is assigned and then modified. What is printed?"
+code = '''
+let a = [1.0f64; 3];
+let mut b = a;
+b[0] = 9.0;
+println!("{} {}", a[0], b[0]);
+'''
+options = ["1 9", "9 9", "compile error E0382", "1 1"]
+answer = 1
+hint = "Does `[f64; 3]` own anything on the heap? What does that make assignment do?"
+explanation = "`[f64; 3]` is `Copy` (its elements are, and it owns no heap memory), so `let mut b = a;` copies the three floats. Changing `b` does not touch `a`, and `a` stays usable."
+
+  [[check.misconception]]
+  option = 2
+  id = "assignment-aliases"
+  feedback = "That is Python/Julia/NumPy intuition: a second name for the same object. A Rust array is a value, and `Copy` types are copied on assignment."
+
+  [[check.misconception]]
+  option = 3
+  id = "everything-moves"
+  feedback = "Only non-`Copy` types move. Arrays of `Copy` elements are `Copy`, unlike `Vec`."
+
+  [[check.misconception]]
+  option = 4
+  id = "copy-is-lazy"
+  feedback = "`b[0] = 9.0` really changes `b`: it was declared `mut`. Only `a` keeps the old value."
+
+[[check]]
+id = "move-into-function"
+prompt = "A function takes a `Vec<f64>` by value. What is printed?"
+code = '''
+fn total(v: Vec<f64>) -> f64 {
+    v.iter().sum()
+}
+fn main() {
+    let v = vec![1.0, 2.0];
+    let s = total(v.clone());
+    let t = total(v);
+    println!("{s} {t}");
+}
+'''
+options = ["3 3", "compile error E0382", "3 0", "compile error E0308"]
+answer = 1
+hint = "Which call gives `v` away, and is `v` used after that call?"
+explanation = "The first call receives a clone, so `v` is still owned here. The second call moves `v` into `total`, and `v` is not used afterwards, so the program compiles. (`total(&v)` with `v: &[f64]` would need neither the clone nor the move.)"
+
+  [[check.misconception]]
+  option = 2
+  id = "clone-also-moves"
+  feedback = "`v.clone()` creates a new vector and moves *that* into the call; `v` itself is untouched until the second call, after which it is never used."
+
+  [[check.misconception]]
+  option = 3
+  id = "move-empties-source"
+  feedback = "There is no emptied vector to sum: each call sums the vector it owns, and both hold 1.0 and 2.0."
+
+  [[check.misconception]]
+  option = 4
+  id = "sum-type-ambiguous"
+  feedback = "`sum()` can infer its result type from the function's declared return type `f64`, so there is no type mismatch."

@@ -1,0 +1,12 @@
+id = "34-sparse-iterative"
+title = "Sparse matrices and iterative solvers"
+track = "scicomp"
+status = "planned"
+summary = """CSR storage with slices, sparse matrix-vector products, conjugate gradients with a convergence history, and Jacobi preconditioning on a 2-D Poisson problem."""
+outline = [
+  "CSR as three Vecs",
+  "SpMV with unit-stride inner loops",
+  "Conjugate gradients and its residual history",
+  "Preconditioning",
+  "Problem: CG on Poisson with a stated iteration bound",
+]

@@ -1,0 +1,11 @@
+id = "38-simd-and-autovectorization"
+title = "SIMD and auto-vectorisation"
+track = "scicomp"
+status = "planned"
+summary = """When LLVM vectorises a loop (and when float reassociation forbids it), chunks_exact for remainder handling, and why a vectorised sum differs in its last digits."""
+outline = [
+  "Reading what LLVM did (--emit asm)",
+  "Floats are not associative: why sums do not vectorise",
+  "Multiple accumulators by hand",
+  "Problem: a dot product several times faster with the same answer within a derived bound",
+]

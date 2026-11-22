@@ -1,0 +1,15 @@
+== tutor explain: odeint, stage 1 ==
+
+Start here: hole `rk4_step` at src/lib.rs:159
+  why: the first compiler error is inside it; nothing runs until the crate compiles.
+  Knowledge component: split-borrows-and-fnmut.
+
+Build: does not compile (1 error)
+  src/lib.rs:181:14: error[E0499]: cannot borrow `ws.k[_]` as mutable more than once at a time: second mutable borrow occurs here
+       [E0499]: two `&mut` borrows of the same value are alive at once. Fields of a struct can be borrowed separately (destructure it); elements of an array or Vec cannot, unless you split it (lesson L02).
+
+Static findings (0):
+  none
+
+Measurements (release build, counting global allocator, deterministic):
+  not run: the crate does not compile

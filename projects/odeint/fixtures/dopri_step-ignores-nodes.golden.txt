@@ -1,0 +1,30 @@
+== tutor explain: odeint, stage 2 ==
+
+Start here: hole `dopri_step` at src/lib.rs:256
+  why: 2 of the 2 failing tests depend on it (Ochiai 0.34); 15 of its dependent tests pass.
+       1 failing test depends on no other hole at this stage: only this hole can explain it.
+  Read its doc comment: it is the specification. Knowledge component: split-borrows-split-at-mut.
+
+Tests: 39/41 pass
+  FAIL behaviour::dopri::exact_for_quartic_quadrature  [depends on: dopri_step]
+       tests/behaviour.rs:248: y = 21.657642648896285
+  FAIL behaviour::integrate::nan_is_an_error_not_a_hang  [depends on: dopri_step, error_norm, integrate, next_step_size]
+       tests/behaviour.rs:490: Ok(Stats { accepted: 4, rejected: 0, evals: 29, t_final: 1.0 })
+
+Holes at stage 2 (ranked by sole-cause evidence, then Ochiai over the measured test-to-hole map):
+  1. dopri_step      0.34  implemented  failing-deps=2 passing-deps=15 sole=1  src/lib.rs:256
+  2. integrate       0.20  implemented  failing-deps=1 passing-deps=11 sole=0  src/lib.rs:333
+  3. error_norm      0.18  implemented  failing-deps=1 passing-deps=15 sole=0  src/lib.rs:192
+  4. next_step_size  0.18  implemented  failing-deps=1 passing-deps=15 sole=0  src/lib.rs:299
+  5. lincomb         0.00  implemented  failing-deps=0 passing-deps=11 sole=0  src/lib.rs:133
+  6. rk4_step        0.00  implemented  failing-deps=0 passing-deps=6 sole=0  src/lib.rs:159
+  7. fit_order       0.00  implemented  failing-deps=0 passing-deps=3 sole=0  src/lib.rs:221
+
+Static findings (0):
+  none
+
+Measurements (release build, counting global allocator, deterministic):
+  allocations rk4_step x100: 0  (reference 0)
+  allocations dopri_step x100: 0  (reference 0)
+  allocations integrate(oscillator, 0..10): 0  (reference 0)
+  steps integrate(oscillator, 0..10, tol 1e-8): accepted 95 rejected 0 evals 666  (reference accepted 95 rejected 0 evals 666)

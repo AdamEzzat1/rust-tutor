@@ -1,0 +1,5 @@
+# The one pinned toolchain. `tutor` refuses to run on any other rustc
+# (RUST_VERSION); upgrading is its own milestone (CLAUDE.md, "Upgrading Rust").
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"

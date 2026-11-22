@@ -1,0 +1,12 @@
+id = "04-iterators-and-closures"
+title = "Iterators and closures"
+track = "core"
+status = "planned"
+summary = """Iterator adaptors as loops the compiler can see the bounds of; `Fn`, `FnMut`, `FnOnce` and why an ODE right-hand side is `FnMut`; capturing by reference vs by move; laziness and `collect`."""
+outline = [
+  "zip, enumerate, chunks_exact, windows",
+  "Fn / FnMut / FnOnce, with a counting right-hand side",
+  "impl Trait in argument and return position",
+  "When an index loop is clearer (rule RT002's exemption)",
+  "Problem: a stencil with windows(3)",
+]

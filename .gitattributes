@@ -1,0 +1,4 @@
+# Goldens, recorded outputs, generated starters and hashed keys are compared
+# byte for byte (determinism invariant): keep LF in every checkout, on every OS.
+* text=auto eol=lf
+*.ps1 text eol=lf
