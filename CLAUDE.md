@@ -27,7 +27,7 @@ $T courses                                 # course manifests: units, outcomes
 $T course list|record|verify [unit]        # record outputs; verify = re-run + grader self-tests
 $T practice list | <id> [file.rs]          # show a problem / grade a solution
 $T run file.rs                             # compile and run one file as the grader does
-cargo test                                 # tutor tests (34)
+cargo test                                 # tutor tests (36)
 (cd projects/odeint/reference && cargo test)   # the project's own tests (36 behaviour + allocation tests)
 scripts/verify_all.sh                      # definition-of-done check: everything above (.ps1 on Windows)
 ```
@@ -137,7 +137,7 @@ proc-macro2, quote, toml and serde (justified in DESIGN.md).
 * **M2 (done): feedback loop.** 8 explain fixtures with golden outputs
   (including a compile-error fixture, E0499), learner model (BKT + SM-2),
   4 lessons with verified keys.
-* **C1 (in progress): courses.** 4 of 18 units ready. DoD per unit:
+* **C1 (in progress): courses.** 5 of 18 units ready. DoD per unit:
   `course verify` passes; every variant has the verdict it declares; every
   notice checked against the recorded output; references verified.
 * **M3: second project** for the scicomp course (candidate: a CSR + CG solver

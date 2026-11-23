@@ -65,6 +65,11 @@ pub struct Problem {
     /// What the starter must get (default: ["incorrect"]).
     #[serde(default)]
     pub starter_expect: Option<Vec<String>>,
+    /// Code given to the learner and shared by submission and reference (for
+    /// example an error enum), so both return the same type and their results
+    /// can be compared. Shown with the problem; the learner does not write it.
+    #[serde(default)]
+    pub provided: Option<String>,
 }
 
 pub const SLOW_RATIO: f64 = 5.0;
@@ -221,11 +226,21 @@ pub fn harness(p: &Problem, submission: &str) -> (String, (usize, usize)) {
     let atol = p.atol.unwrap_or(0.0);
     let e = &p.entry;
     let mut s = String::from(HARNESS_PRELUDE);
+    let shared = if let Some(code) = &p.provided {
+        s.push_str("\nmod provided {\n");
+        s.push_str(code);
+        s.push_str("\n}\n");
+        "    #[allow(unused_imports)]\n    use super::provided::*;\n"
+    } else {
+        ""
+    };
     s.push_str("\nmod submission {\n    use super::Rng;\n");
+    s.push_str(shared);
     let start = s.lines().count() + 1;
     s.push_str(submission);
     let end = s.lines().count();
     s.push_str("\n}\n\nmod reference {\n    use super::Rng;\n");
+    s.push_str(shared);
     s.push_str(&p.reference);
     s.push_str("\n}\n\nfn main() {\n    std::panic::set_hook(Box::new(|_| {}));\n");
     s.push_str("    let mode = std::env::args().nth(1).unwrap_or_default();\n");
@@ -391,13 +406,18 @@ pub fn format_list() -> Res<String> {
 
 pub fn format_problem(id: &str) -> Res<String> {
     let (u, p) = find(id)?;
+    let provided = match &p.provided {
+        Some(code) => format!("Provided (in scope; do not copy it into your file):\n```rust\n{}\n```\n\n", code.trim_end()),
+        None => String::new(),
+    };
     Ok(format!(
-        "== {} ({}, unit {}) ==\n\n{}\n\nSignature: {}\n\nStarter:\n```rust\n{}\n```\nGrade with: tutor practice {} <file.rs>\n",
+        "== {} ({}, unit {}) ==\n\n{}\n\nSignature: {}\n\n{}Starter:\n```rust\n{}\n```\nGrade with: tutor practice {} <file.rs>\n",
         p.title,
         p.difficulty,
         u.id,
         p.prompt.trim(),
         p.signature,
+        provided,
         p.starter.trim_end(),
         p.id
     ))

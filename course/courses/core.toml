@@ -29,5 +29,4 @@ planned = ["06-measuring-performance"]
 
 [[outcome]]
 text = "Report numerical failure as a typed error the caller can handle, not a panic or a silent NaN."
-assessed_by = ["project:odeint"]
-planned = ["03-errors-and-results"]
+assessed_by = ["03-errors-and-results", "project:odeint"]

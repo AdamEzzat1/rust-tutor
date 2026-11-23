@@ -45,6 +45,12 @@ passes and every check below has been done.
     wrong, not just that it is wrong.
 * **Problems:**
   * `pub fn` with the declared `signature`.
+  * A problem whose return type the learner should not define (an error
+    enum, say) puts it in `provided`. It is compiled once and shared by the
+    submission and the reference, so their results have the same type and
+    can be compared, and it is shown with the problem. Errors are compared
+    by their `Debug` text, so give error variants integer or unit fields,
+    not floats that two correct versions may round differently (unit 03).
   * Cases are argument lists, or templates containing `F(` that the harness
     calls, e.g. `"{ let mut v = vec![1.0]; F(&mut v); v }"`.
   * `random.setup` may use `rng.f64()`, `rng.range(lo, hi)` and `rng.normal()`

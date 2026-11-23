@@ -1,12 +1,611 @@
 id = "03-errors-and-results"
 title = "Errors as values: Result, Option and ?"
 track = "core"
-status = "planned"
-summary = """`Result` and `?` for recoverable numerical failure (non-convergence, singular matrices, invalid input), `Option` for absent values, custom error enums with `Display` and `std::error::Error`, and when a panic is the right answer (a broken invariant, not bad data)."""
-outline = [
-  "Result vs panic: whose fault is the failure?",
-  "? and From conversions",
-  "An error enum for a solver (odeint's OdeError as the worked example)",
-  "NaN as a silent error: turning it into an Err at the boundary",
-  "Problem: a Newton iteration returning Result<f64, NewtonError>",
+status = "ready"
+summary = "Numerical code fails in ordinary ways: an iteration does not converge, a derivative vanishes, an input is NaN. Rust makes such failures values (`Result`, `Option`) that the caller must look at, `?` passes them upward, and a small error enum says exactly what went wrong. A panic is kept for bugs in your own code. Ends with a Newton iteration that reports each way it can fail."
+kcs = ["result-vs-panic", "question-mark-and-from", "error-enums", "nan-at-the-boundary"]
+prerequisites = ["core/01-ownership-and-borrowing", "core/02-traits-and-generics"]
+
+[[section]]
+title = "Result or panic: whose fault is the failure?"
+refs = ["rust-book-ch09", "rust-api-guidelines"]
+body = '''
+`Result<T, E>` is an enum with two variants, `Ok(T)` and `Err(E)`. A function
+that returns one cannot be used as if it had succeeded: to get the `T` out,
+the caller has to `match`, or call a method that decides what an `Err` means
+(`unwrap_or`, `map_err`, `?`). Failure is part of the type, so it cannot be
+ignored by accident.
+
+A **panic** unwinds the thread (or aborts the process) with a message. It is
+for situations the caller cannot sensibly handle because they mean the
+program itself is wrong: an index past the end of a buffer you sized
+yourself, an internal invariant broken.
+
+A useful test is *whose fault is it?*
+
+* **The data's**: text that is not a number, a tolerance of -1, a solver that
+  does not converge from this starting point. That is an ordinary outcome:
+  return `Err` and let the caller decide.
+* **The code's own**: a bug. Panic, ideally with a message naming the
+  invariant (`assert!`, or `debug_assert!` when the check is costly).
+
+`Option<T>` (`Some(T)` or `None`) is the variant of this for "no value" when
+there is nothing more to say: the maximum of an empty slice, a sample
+variance with fewer than two points (unit 30).
+'''
+
+  [[section.example]]
+  caption = "Parsing is fallible, so `str::parse` returns a Result; `match` handles both outcomes."
+  notice = "Notice that the leading space is an error too (`parse` does not trim), and that an empty string has its own error kind."
+  code = '''
+for s in ["2.5", "abc", " 1.5", ""] {
+    match s.parse::<f64>() {
+        Ok(x) => println!("{s:?} -> Ok({x})"),
+        Err(e) => println!("{s:?} -> Err({e:?})"),
+    }
+}
+'''
+
+  [[section.example]]
+  caption = "Indexing past the end of a buffer you allocated yourself is a bug, and Rust panics (debug profile)."
+  notice = "Notice that the panic message names the length and the index: a bug report, not an error to handle."
+  profile = "debug"
+  code = '''
+let buf = vec![0.0f64; 3];
+let i = buf.len() + 2;
+println!("{}", buf[i]);
+'''
+
+  [[section.analogy]]
+  title = "A sealed lab report"
+  text = '''
+A function returning `Result` hands back a sealed envelope that is either a
+measurement or a note explaining why there is none. You cannot read the
+measurement without opening the envelope, and opening it shows you which of
+the two you got. A panic is the fire alarm: the experiment stops, everyone
+leaves, and nobody is expected to carry on from where it was.
+'''
+  breaks = '''
+An envelope can be left unopened on a desk; an unused `Result` makes the
+compiler warn (`#[must_use]`), and its value cannot be used without
+deciding what an `Err` means. And a real fire alarm cannot be caught; a
+panic can be (`std::panic::catch_unwind`), which test harnesses use, but
+ordinary code should not rely on that to handle expected failures.
+'''
+
+[[section]]
+title = "? passes the error upward, and From converts it"
+refs = ["rust-book-ch09", "std-error"]
+body = '''
+Inside a function that returns `Result<T, E>`, writing `expr?` means: if
+`expr` is `Ok(v)`, the value is `v`; if it is `Err(e)`, return
+`Err(From::from(e))` from the enclosing function right now. The `From`
+conversion is what lets one function combine failures of different kinds:
+implement `From<ParseFloatError> for MyError` and `?` turns a parse error
+into your error type on the way out.
+
+`?` works on `Option` in a function returning `Option` in the same way
+(a `None` returns `None`). It does not cross between the two: on an
+`Option` inside a function returning `Result`, convert first with
+`.ok_or(MyError::Missing)?`.
+'''
+
+  [[section.example]]
+  caption = "One error type for two kinds of failure: a parse error (converted by From) and a value out of range."
+  notice = "Notice that \"x\" fails inside `parse` and is converted to `InputError::Parse` by `?`, while \"-1\" parses and is rejected afterwards."
+  code = '''
+use std::num::ParseFloatError;
+
+#[derive(Debug)]
+enum InputError {
+    Parse(ParseFloatError),
+    NotPositive(f64),
+}
+
+impl From<ParseFloatError> for InputError {
+    fn from(e: ParseFloatError) -> Self {
+        InputError::Parse(e)
+    }
+}
+
+fn parse_positive(s: &str) -> Result<f64, InputError> {
+    let x: f64 = s.trim().parse()?;
+    if !(x > 0.0) {
+        return Err(InputError::NotPositive(x));
+    }
+    Ok(x)
+}
+
+fn main() {
+    for s in ["2.5", " 4 ", "-1", "x"] {
+        println!("{s:?}: {:?}", parse_positive(s));
+    }
+}
+'''
+
+[[section]]
+title = "An error enum for a solver"
+refs = ["std-error", "rust-api-guidelines"]
+body = '''
+A solver can fail in several distinct ways, and the caller may want to react
+differently to each: retry from another starting point after a
+non-convergence, refine the model after a non-finite value, fix the call
+after an invalid argument. One `enum` with one variant per way, each carrying
+the facts needed to act (an iteration count, the time reached), says this in
+the type. odeint's `OdeError` (`InvalidSpan`, `DimensionMismatch`,
+`MaxSteps { t }`, `StepTooSmall { t, h }`, `NonFinite { t }`) is built this
+way.
+
+Two trait implementations make an error type play well with the rest of
+Rust: `Display`, a sentence for people, and `std::error::Error`, which marks
+the type as an error so it can be boxed as `Box<dyn Error>` and passed up
+through `?` from functions with different error types. Deriving `Debug`
+gives the programmer's view; `PartialEq` lets tests compare errors.
+'''
+
+  [[section.example]]
+  caption = "An error enum with Display and std::error::Error, passed up as Box<dyn Error>."
+  notice = "Notice that `{}` uses the Display sentence and `{:?}` the derived Debug form, and that `?` boxed the solver's error without any conversion code."
+  code = '''
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SolveError {
+    NoConvergence { iterations: usize },
+    NonFinite { iteration: usize },
+}
+
+impl fmt::Display for SolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SolveError::NoConvergence { iterations } => write!(f, "no convergence after {iterations} iterations"),
+            SolveError::NonFinite { iteration } => write!(f, "non-finite value at iteration {iteration}"),
+        }
+    }
+}
+
+impl Error for SolveError {}
+
+fn solve(fail: bool) -> Result<f64, SolveError> {
+    if fail { Err(SolveError::NoConvergence { iterations: 50 }) } else { Ok(1.5) }
+}
+
+fn run() -> Result<f64, Box<dyn Error>> {
+    let a = solve(false)?;
+    let b = solve(true)?;
+    Ok(a + b)
+}
+
+fn main() {
+    match run() {
+        Ok(v) => println!("ok {v}"),
+        Err(e) => println!("display: {e}\ndebug:   {e:?}"),
+    }
+}
+'''
+
+[[section]]
+title = "NaN: the error that is not a value of Result"
+refs = ["goldberg-1991-errors"]
+body = '''
+IEEE arithmetic does not stop on an invalid operation: `(-1.0f64).sqrt()`
+and `0.0 / 0.0` are NaN, `1e308 * 10.0` is infinity, and these values flow
+on through every later operation. NaN also compares false with everything,
+itself included, so a check written as `if tol <= 0.0 { reject }` lets a NaN
+through: `NaN <= 0.0` is false. Some functions skip NaN instead of spreading
+it: `f64::max(NaN, 1.0)` is `1.0`. Even parsing is not safe: `"1e400"`
+parses, as infinity.
+
+Turn these into errors **at the boundary**, where values enter your code or
+come back from a user's function: check `x.is_finite()` (false for NaN and
+both infinities), and write range checks so that NaN fails them, as
+`!(tol > 0.0)`. After that point the rest of the code can assume finite
+numbers.
+'''
+
+  [[section.example]]
+  caption = "A NaN made in one place, carried through a sum and dropped by max."
+  notice = "Notice that the sum is NaN, but `max` returns 2 as if the NaN were not there, and only `is_finite` catches every bad value."
+  code = '''
+let v = [1.0f64, -1.0, 4.0];
+let roots: Vec<f64> = v.iter().map(|x| x.sqrt()).collect();
+let sum: f64 = roots.iter().sum();
+let max = roots.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+println!("roots {roots:?}");
+println!("sum {sum}  max {max}");
+println!("all finite: {}", roots.iter().all(|r| r.is_finite()));
+'''
+
+[[question]]
+id = "nan-passes-check"
+kind = "output"
+prompt = "A solver validates its tolerance like this. What is printed?"
+code = '''
+let tol = f64::NAN;
+if tol <= 0.0 {
+    println!("rejected");
+} else {
+    println!("accepted");
+}
+'''
+options = ["rejected", "accepted", "panic: NaN comparison", "compile error E0277"]
+answer = 2
+explanation = "Every ordered comparison involving NaN is false, so `tol <= 0.0` is false and the else branch runs. Write the check so that NaN fails it: `if !(tol > 0.0) { reject }`, or test `tol.is_finite()` too."
+
+  [[question.misconception]]
+  option = 1
+  id = "nan-is-small"
+  feedback = "NaN is not less than, equal to, or greater than anything; `tol <= 0.0` is false."
+
+  [[question.misconception]]
+  option = 3
+  id = "nan-comparison-panics"
+  feedback = "Comparisons on f64 never panic; they return false when NaN is involved."
+
+  [[question.misconception]]
+  option = 4
+  id = "partialord-not-usable"
+  feedback = "f64 implements PartialOrd, so `<=` compiles; it is `Ord` (needed by `sort`) that f64 lacks."
+
+[[question]]
+id = "parse-overflow"
+kind = "output"
+prompt = "What is printed?"
+code = '''
+println!("{:?}", "1e400".parse::<f64>());
+'''
+options = ["Err(ParseFloatError { kind: Invalid })", "Ok(inf)", "Ok(1e400)", "panic: float overflow"]
+answer = 2
+explanation = "1e400 is a well-formed float literal, so parsing succeeds; the value is larger than f64::MAX (about 1.8e308) and rounds to infinity. A successful Result is not a finite number: check `is_finite` at the boundary."
+
+  [[question.misconception]]
+  option = 1
+  id = "overflow-is-parse-error"
+  feedback = "The text is valid; parse errors are about the text (empty, invalid). The value rounds to infinity."
+
+  [[question.misconception]]
+  option = 3
+  id = "f64-unbounded"
+  feedback = "f64 stops at about 1.8e308; anything larger is infinity."
+
+  [[question.misconception]]
+  option = 4
+  id = "float-overflow-panics"
+  feedback = "Integer overflow panics in debug builds; float overflow never does: it produces infinity."
+
+[[question]]
+id = "whose-fault"
+kind = "choice"
+prompt = "Which of these should a numerical library report with a panic rather than an Err?"
+options = [
+  "An index into a buffer the library allocated itself is past its end",
+  "The caller's starting point makes Newton's method diverge",
+  "The caller passes a tolerance of -1",
+  "The caller's function returns NaN",
 ]
+answer = 1
+explanation = "Only the first is the library's own bug: no caller can fix it, and continuing would compute nonsense. The other three are properties of the caller's data, which the caller can act on, so they are Err values."
+
+  [[question.misconception]]
+  option = 2
+  id = "divergence-is-a-bug"
+  feedback = "Divergence depends on the problem and the starting point, not on a bug; the caller can retry from elsewhere."
+
+  [[question.misconception]]
+  option = 3
+  id = "bad-argument-must-panic"
+  feedback = "A bad argument is the caller's data, and can be reported as Err; some APIs panic instead and document it, but an Err is never wrong here."
+
+  [[question.misconception]]
+  option = 4
+  id = "nan-means-crash"
+  feedback = "NaN from a user's function is information about their function; return it as an error at the boundary."
+
+[[problem]]
+id = "err-newton"
+title = "A Newton iteration that says how it failed"
+difficulty = "core"
+kcs = ["error-enums", "nan-at-the-boundary", "result-vs-panic"]
+signature = "pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Result<f64, NewtonError>"
+entry = "newton"
+provided = '''
+/// Why `newton` gave no root. Iterations are numbered from 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NewtonError {
+    /// `tol` is not a positive finite number, `x0` is not finite, or `max_iter` is 0.
+    InvalidInput,
+    /// f(x) or f'(x) was NaN or infinite at this iteration.
+    NonFinite { iteration: usize },
+    /// f'(x) was zero (and f(x) was not) at this iteration.
+    ZeroDerivative { iteration: usize },
+    /// `max_iter` iterations without meeting the stopping test.
+    NoConvergence { iterations: usize },
+}
+'''
+prompt = '''
+`f(x)` returns `(f(x), f'(x))`. Write `newton`, which starts from `x0` and
+repeats the Newton step `x <- x - f(x)/f'(x)`. `NewtonError` is provided
+(it is in scope; do not define it yourself). Follow this order exactly:
+
+1. If `tol` is not a positive finite number (NaN included), `x0` is not
+   finite, or `max_iter == 0`: `Err(InvalidInput)`.
+2. For iteration `k` in `0..max_iter`: evaluate `(fx, dfx) = f(x)`.
+   * If either is not finite: `Err(NonFinite { iteration: k })`.
+   * If `fx == 0.0`, `x` is an exact root: `Ok(x)`, even if `dfx` is also 0.
+   * If `dfx == 0.0`: `Err(ZeroDerivative { iteration: k })`.
+   * Otherwise let `step = fx / dfx`, set `x -= step`, and return `Ok(x)`
+     if `step.abs() <= tol * x.abs().max(1.0)` (using the new `x`).
+3. After `max_iter` iterations: `Err(NoConvergence { iterations: max_iter })`.
+
+Do not panic for any input: every failure above is the caller's data.
+
+Roots are compared with `rtol = 1e-12`, derived: at a simple root the
+Newton map has derivative 0, so a rounding difference of a few ulps between
+two correct versions is squeezed out by the next step; at the double root in
+the tests (convergence factor 1/2) it is halved at each step. Either way the
+returned roots agree to a few ulps, far inside 1e-12. Errors must be the
+same variant with the same count.
+'''
+starter = '''
+pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Result<f64, NewtonError> {
+    let mut x = x0;
+    for _ in 0..max_iter {
+        let (fx, dfx) = f(x);
+        let step = fx / dfx;
+        x -= step;
+        if step.abs() <= tol * x.abs().max(1.0) {
+            return Ok(x);
+        }
+    }
+    Ok(x)
+}
+'''
+reference = '''
+pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Result<f64, NewtonError> {
+    // `!(tol > 0.0)` is true for NaN; `tol <= 0.0` would not be.
+    if !(tol > 0.0) || !tol.is_finite() || !x0.is_finite() || max_iter == 0 {
+        return Err(NewtonError::InvalidInput);
+    }
+    let mut x = x0;
+    for k in 0..max_iter {
+        let (fx, dfx) = f(x);
+        if !fx.is_finite() || !dfx.is_finite() {
+            return Err(NewtonError::NonFinite { iteration: k });
+        }
+        if fx == 0.0 {
+            return Ok(x);
+        }
+        if dfx == 0.0 {
+            return Err(NewtonError::ZeroDerivative { iteration: k });
+        }
+        let step = fx / dfx;
+        x -= step;
+        if step.abs() <= tol * x.abs().max(1.0) {
+            return Ok(x);
+        }
+    }
+    Err(NewtonError::NoConvergence { iterations: max_iter })
+}
+'''
+cases = [
+  "|x| (x * x - 2.0, 2.0 * x), 1.0, 1e-12, 50",
+  "|x| (x * x - 2.0, 2.0 * x), 0.0, 1e-12, 50",
+  "|x| (x * x * x - 2.0 * x + 2.0, 3.0 * x * x - 2.0), 0.0, 1e-12, 50",
+  "|x: f64| (x.ln(), 1.0 / x), 3.0, 1e-12, 50",
+  "|x: f64| (x.exp() - 2.0, x.exp()), 800.0, 1e-12, 50",
+  "|x| (x - 1.0, 1.0), 0.0, f64::NAN, 50",
+  "|x| (x - 1.0, 1.0), 0.0, 0.0, 50",
+  "|x| (x - 1.0, 1.0), f64::INFINITY, 1e-12, 50",
+  "|x| (x - 1.0, 1.0), 0.0, 1e-12, 0",
+  "|x| (x * x, 2.0 * x), 0.0, 1e-12, 50",
+  "|x| ((x - 1.0) * (x - 1.0), 2.0 * (x - 1.0)), 2.0, 1e-12, 50",
+]
+rtol = 1e-12
+hints = [
+  "The starter never returns an Err. Which of the four failures in the prompt can it run into, and what does it return instead?",
+  "Validate the inputs first, with checks that NaN fails (`!(tol > 0.0)`). In the loop, check `is_finite` on both values, then the exact root, then the zero derivative, in that order.",
+]
+
+  [problem.random]
+  count = 25
+  setup = "let a = 0.1 + 10.0 * rng.f64(); let x0 = 0.5 + 2.5 * rng.f64(); let m = rng.range(1, 12);"
+  call = "|x| (x * x * x - a, 3.0 * x * x), x0, 1e-12, m"
+
+  [[problem.variant]]
+  label = "validates with tol <= 0.0, which a NaN tolerance passes"
+  code = '''
+pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Result<f64, NewtonError> {
+    if tol <= 0.0 || !x0.is_finite() || max_iter == 0 {
+        return Err(NewtonError::InvalidInput);
+    }
+    let mut x = x0;
+    for k in 0..max_iter {
+        let (fx, dfx) = f(x);
+        if !fx.is_finite() || !dfx.is_finite() {
+            return Err(NewtonError::NonFinite { iteration: k });
+        }
+        if fx == 0.0 {
+            return Ok(x);
+        }
+        if dfx == 0.0 {
+            return Err(NewtonError::ZeroDerivative { iteration: k });
+        }
+        let step = fx / dfx;
+        x -= step;
+        if step.abs() <= tol * x.abs().max(1.0) {
+            return Ok(x);
+        }
+    }
+    Err(NewtonError::NoConvergence { iterations: max_iter })
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "checks the derivative before the exact root"
+  code = '''
+pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Result<f64, NewtonError> {
+    if !(tol > 0.0) || !tol.is_finite() || !x0.is_finite() || max_iter == 0 {
+        return Err(NewtonError::InvalidInput);
+    }
+    let mut x = x0;
+    for k in 0..max_iter {
+        let (fx, dfx) = f(x);
+        if !fx.is_finite() || !dfx.is_finite() {
+            return Err(NewtonError::NonFinite { iteration: k });
+        }
+        if dfx == 0.0 {
+            return Err(NewtonError::ZeroDerivative { iteration: k });
+        }
+        let step = fx / dfx;
+        x -= step;
+        if step.abs() <= tol * x.abs().max(1.0) {
+            return Ok(x);
+        }
+    }
+    Err(NewtonError::NoConvergence { iterations: max_iter })
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "checks is_nan instead of is_finite: an infinite f(x) slips through"
+  code = '''
+pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Result<f64, NewtonError> {
+    if !(tol > 0.0) || !tol.is_finite() || !x0.is_finite() || max_iter == 0 {
+        return Err(NewtonError::InvalidInput);
+    }
+    let mut x = x0;
+    for k in 0..max_iter {
+        let (fx, dfx) = f(x);
+        if fx.is_nan() || dfx.is_nan() {
+            return Err(NewtonError::NonFinite { iteration: k });
+        }
+        if fx == 0.0 {
+            return Ok(x);
+        }
+        if dfx == 0.0 {
+            return Err(NewtonError::ZeroDerivative { iteration: k });
+        }
+        let step = fx / dfx;
+        x -= step;
+        if step.abs() <= tol * x.abs().max(1.0) {
+            return Ok(x);
+        }
+    }
+    Err(NewtonError::NoConvergence { iterations: max_iter })
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "asserts a nonzero derivative: panics on the caller's data"
+  code = '''
+pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Result<f64, NewtonError> {
+    if !(tol > 0.0) || !tol.is_finite() || !x0.is_finite() || max_iter == 0 {
+        return Err(NewtonError::InvalidInput);
+    }
+    let mut x = x0;
+    for k in 0..max_iter {
+        let (fx, dfx) = f(x);
+        if !fx.is_finite() || !dfx.is_finite() {
+            return Err(NewtonError::NonFinite { iteration: k });
+        }
+        if fx == 0.0 {
+            return Ok(x);
+        }
+        assert!(dfx != 0.0, "zero derivative at iteration {k}");
+        let step = fx / dfx;
+        x -= step;
+        if step.abs() <= tol * x.abs().max(1.0) {
+            return Ok(x);
+        }
+    }
+    Err(NewtonError::NoConvergence { iterations: max_iter })
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "a helper that returns Result, combined with ?"
+  code = '''
+fn eval(f: &impl Fn(f64) -> (f64, f64), x: f64, k: usize) -> Result<(f64, f64), NewtonError> {
+    let (fx, dfx) = f(x);
+    if fx.is_finite() && dfx.is_finite() {
+        Ok((fx, dfx))
+    } else {
+        Err(NewtonError::NonFinite { iteration: k })
+    }
+}
+
+pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Result<f64, NewtonError> {
+    let valid = tol > 0.0 && tol.is_finite() && x0.is_finite() && max_iter > 0;
+    if !valid {
+        return Err(NewtonError::InvalidInput);
+    }
+    let mut x = x0;
+    for k in 0..max_iter {
+        let (fx, dfx) = eval(&f, x, k)?;
+        if fx == 0.0 {
+            return Ok(x);
+        }
+        if dfx == 0.0 {
+            return Err(NewtonError::ZeroDerivative { iteration: k });
+        }
+        let step = fx / dfx;
+        x -= step;
+        if step.abs() <= tol * x.abs().max(1.0) {
+            return Ok(x);
+        }
+    }
+    Err(NewtonError::NoConvergence { iterations: max_iter })
+}
+'''
+  expect = ["correct"]
+
+  [[problem.variant]]
+  label = "returns Option<f64>: the caller loses why it failed"
+  code = '''
+pub fn newton(f: impl Fn(f64) -> (f64, f64), x0: f64, tol: f64, max_iter: usize) -> Option<f64> {
+    let mut x = x0;
+    for _ in 0..max_iter {
+        let (fx, dfx) = f(x);
+        if !fx.is_finite() || !dfx.is_finite() || dfx == 0.0 {
+            return None;
+        }
+        let step = fx / dfx;
+        x -= step;
+        if step.abs() <= tol * x.abs().max(1.0) {
+            return Some(x);
+        }
+    }
+    None
+}
+'''
+  expect = ["compile_error:signature"]
+
+[[reference]]
+id = "rust-book-ch09"
+text = "S. Klabnik, C. Nichols et al., The Rust Programming Language, chapter 9: Error Handling."
+url = "https://doc.rust-lang.org/book/ch09-00-error-handling.html"
+
+[[reference]]
+id = "rust-api-guidelines"
+text = "Rust API Guidelines: Dependability (C-VALIDATE) and Interoperability (C-GOOD-ERR)."
+url = "https://rust-lang.github.io/api-guidelines/"
+
+[[reference]]
+id = "std-error"
+text = "The Rust Standard Library: trait std::error::Error."
+url = "https://doc.rust-lang.org/std/error/trait.Error.html"
+
+[[reference]]
+id = "goldberg-1991-errors"
+text = "D. Goldberg, What every computer scientist should know about floating-point arithmetic, ACM Computing Surveys 23(1), 1991 (section 2.2, special quantities)."
+url = "https://doi.org/10.1145/103162.103163"
+
+[[reference]]
+id = "kelley-2003"
+text = "C. T. Kelley, Solving Nonlinear Equations with Newton's Method, SIAM, 2003."
+url = "https://doi.org/10.1137/1.9780898718898"

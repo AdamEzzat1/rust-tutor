@@ -15,7 +15,7 @@ whose own grader passes its own tests.
 
 | Course | Status |
 |---|---|
-| Core Rust for scientific computing | 2 of 8 units ready (ownership and borrowing; traits and generics) |
+| Core Rust for scientific computing | 3 of 8 units ready (ownership and borrowing; traits and generics; errors and results) |
 | Scientific computing in Rust | 2 of 10 units ready (floating point; memory layout) |
 
 "Ready" means the unit has recorded outputs and graders that pass their own

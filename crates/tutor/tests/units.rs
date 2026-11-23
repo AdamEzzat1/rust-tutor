@@ -142,6 +142,36 @@ fn outcome_keys() {
     assert_eq!(snippet::as_program("fn main() {}"), "fn main() {}");
 }
 
+fn problem(extra: &str) -> tutor::practice::Problem {
+    let src = format!(
+        "id = \"p\"\ntitle = \"t\"\ndifficulty = \"warm-up\"\nkcs = []\nsignature = \"pub fn f() -> E\"\n\
+         entry = \"f\"\nprompt = \"\"\nstarter = \"\"\nreference = \"pub fn f() -> E {{ E::A }}\"\ncases = [\"\"]\n{extra}"
+    );
+    toml::from_str(&src).expect("problem parses")
+}
+
+#[test]
+fn provided_code_is_shared_by_both_modules() {
+    let p = problem("provided = \"#[derive(Debug)] pub enum E { A }\"\n");
+    let sub = "pub fn f() -> E { E::A }";
+    let (src, (start, end)) = tutor::practice::harness(&p, sub);
+    let at = |needle: &str| src.find(needle).unwrap_or_else(|| panic!("missing {needle:?}"));
+    assert!(at("mod provided {") < at("mod submission {"));
+    assert!(at("mod submission {") < at("mod reference {"));
+    assert_eq!(src.matches("use super::provided::*;").count(), 2, "both modules import the shared code");
+    // Diagnostics are attributed to the learner by this range: it must hold
+    // exactly the submission, not the import lines in front of it.
+    let lines: Vec<&str> = src.lines().collect();
+    assert_eq!(lines[start - 1], sub);
+    assert_eq!(end, start);
+}
+
+#[test]
+fn no_provided_module_without_provided_code() {
+    let (src, _) = tutor::practice::harness(&problem(""), "pub fn f() -> E { E::A }");
+    assert!(!src.contains("mod provided"));
+}
+
 #[test]
 fn fnv_is_stable() {
     // Published FNV-1a 64-bit test vectors.
