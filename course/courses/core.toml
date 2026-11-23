@@ -30,3 +30,7 @@ planned = ["06-measuring-performance"]
 [[outcome]]
 text = "Report numerical failure as a typed error the caller can handle, not a panic or a silent NaN."
 assessed_by = ["03-errors-and-results", "project:odeint"]
+
+[[outcome]]
+text = "Choose the weakest closure bound (Fn, FnMut, FnOnce) a numerical routine can live with, and write stencils and reductions with iterator adaptors, knowing which consumers allocate."
+assessed_by = ["04-iterators-and-closures"]

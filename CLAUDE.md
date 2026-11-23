@@ -137,7 +137,7 @@ proc-macro2, quote, toml and serde (justified in DESIGN.md).
 * **M2 (done): feedback loop.** 8 explain fixtures with golden outputs
   (including a compile-error fixture, E0499), learner model (BKT + SM-2),
   4 lessons with verified keys.
-* **C1 (in progress): courses.** 5 of 18 units ready. DoD per unit:
+* **C1 (in progress): courses.** 6 of 18 units ready. DoD per unit:
   `course verify` passes; every variant has the verdict it declares; every
   notice checked against the recorded output; references verified.
 * **M3: second project** for the scicomp course (candidate: a CSR + CG solver

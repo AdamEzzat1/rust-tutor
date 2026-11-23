@@ -8,7 +8,7 @@ passes and every check below has been done.
 ## Workflow
 
 1. Write the unit (sections, examples, analogies, questions, problems,
-   references). The four ready units are worked examples.
+   references). The ready units are worked examples.
 2. Run `tutor course record <id>`. It compiles and runs every example on the
    pinned rustc and writes `course/outputs/<id>.toml`. Never edit that file.
 3. **Read every recorded output against its `notice`.** The recorder cannot
@@ -53,6 +53,10 @@ passes and every check below has been done.
     not floats that two correct versions may round differently (unit 03).
   * Cases are argument lists, or templates containing `F(` that the harness
     calls, e.g. `"{ let mut v = vec![1.0]; F(&mut v); v }"`.
+  * To grade how a closure argument is used, a template can return the
+    result together with a count the closure keeps:
+    `"{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; x * x }, 0.0, 1.0, 4); (r, calls) }"`.
+    Counts compare exactly (unit 04, `clo-trapezoid`).
   * `random.setup` may use `rng.f64()`, `rng.range(lo, hi)` and `rng.normal()`
     (SplitMix64, stable by construction).
   * `perf` declares `setup`, `call` and `n`; the harness times the call.

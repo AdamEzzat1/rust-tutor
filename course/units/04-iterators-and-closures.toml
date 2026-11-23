@@ -1,12 +1,692 @@
 id = "04-iterators-and-closures"
 title = "Iterators and closures"
 track = "core"
-status = "planned"
-summary = """Iterator adaptors as loops the compiler can see the bounds of; `Fn`, `FnMut`, `FnOnce` and why an ODE right-hand side is `FnMut`; capturing by reference vs by move; laziness and `collect`."""
-outline = [
-  "zip, enumerate, chunks_exact, windows",
-  "Fn / FnMut / FnOnce, with a counting right-hand side",
-  "impl Trait in argument and return position",
-  "When an index loop is clearer (rule RT002's exemption)",
-  "Problem: a stencil with windows(3)",
+status = "ready"
+summary = "An iterator is a loop whose bounds travel with it: `zip`, `enumerate`, `windows` and `chunks_exact` say which elements are visited, and nothing runs until something consumes the iterator. A closure is a function that carries part of its surroundings, and the three traits `Fn`, `FnMut` and `FnOnce` say what it may do with them. That is why a solver takes its right-hand side as `FnMut`. Ends with a three-point stencil written with `windows(3)`, and a trapezoid rule that a caller can count the evaluations of."
+kcs = ["iterator-adaptors", "iterator-laziness", "closure-traits", "impl-trait", "index-loop-exemption"]
+prerequisites = ["core/01-ownership-and-borrowing", "core/02-traits-and-generics", "core/03-errors-and-results"]
+
+[[section]]
+title = "Iterators: loops whose bounds come with them"
+refs = ["rust-book-ch13", "std-iter"]
+body = '''
+An **iterator** is a value with a `next` method that returns `Some(item)`
+until the items run out, then `None`. A `for` loop calls `next` for you.
+Slices give three kinds: `iter()` yields `&T`, `iter_mut()` yields `&mut T`,
+and `into_iter()` on a `Vec` yields the `T` values themselves (moving them).
+
+**Adaptors** build a new iterator from an old one without running anything:
+
+* `a.iter().zip(&b)` yields pairs `(&a[i], &b[i])`, and **stops at the
+  shorter** of the two. That is often what you want and sometimes a silent
+  bug: zipping a 5-element vector with a 3-element one gives 3 pairs and no
+  error.
+* `enumerate()` pairs each item with its position, when you need the number
+  as well as the element.
+* `windows(k)` yields every run of `k` neighbours, overlapping:
+  `[1, 2, 3, 4]` gives `[1, 2, 3]` and `[2, 3, 4]`. A stencil that reads
+  `u[i-1], u[i], u[i+1]` is a walk over `windows(3)`.
+* `chunks_exact(k)` yields non-overlapping blocks of `k`, and keeps the
+  leftover elements apart in `remainder()`, so the loop body can assume
+  exactly `k`.
+
+Adaptors are **lazy**: `map` stores the closure and calls it only when
+something asks for the next item. A **consumer** (`sum`, `count`, `fold`,
+`for`, `collect`) does the asking. `collect` builds a new collection, so it
+allocates. `sum` and `fold` do not.
+'''
+
+  [[section.example]]
+  caption = "Building an iterator runs nothing; the sum at the end does the work."
+  notice = "Notice that \"built the iterator\" comes first: the closure inside `map` runs only when `sum` asks for items, once per element."
+  code = '''
+let v = [1.0f64, 2.0, 3.0];
+let it = v.iter().map(|x| {
+    println!("visiting {x}");
+    x * 10.0
+});
+println!("built the iterator");
+let total: f64 = it.sum();
+println!("total {total}");
+'''
+
+  [[section.example]]
+  caption = "zip, enumerate, windows and chunks_exact on one five-element array."
+  notice = "Notice that zip made 3 pairs from 5 and 3 elements without complaint, that the windows overlap, and that chunks_exact kept the odd element out in `remainder` instead of making a short last chunk."
+  code = '''
+let a = [1.0f64, 2.0, 3.0, 4.0, 5.0];
+let b = [10.0f64, 20.0, 30.0];
+let dot: f64 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+println!("zip: dot {dot} over {} pairs", a.iter().zip(&b).count());
+for (i, w) in a.windows(3).enumerate() {
+    println!("window {i}: {w:?}");
+}
+let chunks = a.chunks_exact(2);
+println!("remainder {:?}", chunks.remainder());
+for c in chunks {
+    println!("chunk {c:?}");
+}
+'''
+
+  [[section.analogy]]
+  title = "A recipe card, not a meal"
+  text = '''
+`v.iter().map(f)` is a recipe card: it says what to do with each ingredient,
+but nothing is cooked when you write it. `sum` or `collect` is the cook who
+follows the card, one ingredient at a time. Stacking adaptors is writing
+more steps on the same card, which is why a chain of five adaptors makes one
+pass over the data and not five.
+'''
+  breaks = '''
+A recipe card can be followed twice. Most iterators are used up by one
+pass: after `sum` has consumed `it`, `it` is gone (moved). To go over the
+data again, ask the slice for a new iterator. And a card cannot change its
+ingredients; `iter_mut` can.
+'''
+
+[[section]]
+title = "Closures, and the three traits Fn, FnMut, FnOnce"
+refs = ["rust-book-ch13", "std-fnmut", "rust-reference-closures"]
+body = '''
+A **closure** (`|x| x * k`) is an anonymous function that may use variables
+from where it was written. Those are its **captures**. The compiler picks
+how to capture each one from what the body does with it: by shared
+reference if it only reads it, by `&mut` if it changes it, by value if it
+moves it out.
+
+What the closure does with its captures decides which traits it implements,
+and so which functions accept it:
+
+* **`Fn`**: only reads its captures. It can be called any number of times,
+  even from several places at once.
+* **`FnMut`**: may change its captures. It can be called many times, but
+  each call needs exclusive (`&mut`) access to the closure, so the
+  parameter is written `mut f: impl FnMut(..)`.
+* **`FnOnce`**: may move a capture out, so it can be called only once.
+
+Every `Fn` is also an `FnMut`, and every `FnMut` is also an `FnOnce`. A
+function should ask for the **weakest bound it can live with**, because a
+weaker bound accepts more closures. A solver calls its right-hand side many
+times, so it cannot take `FnOnce`. It does not need to share the closure
+between threads, so it does not need `Fn`. `FnMut` is what is left, and it
+lets the caller pass a closure that counts its own evaluations. odeint's
+integrators take `F: FnMut(f64, &[f64], &mut [f64])` for this reason.
+
+`move |..| ..` forces every capture to be taken **by value**. It is what you
+need when the closure must outlive the variables it uses (returning it from
+a function, sending it to a thread). For a `Copy` value like an integer,
+moving it in makes the closure's own copy, and changes to that copy are not
+seen outside.
+'''
+
+  [[section.example]]
+  caption = "An Euler integrator that takes its right-hand side as FnMut, called with a closure that counts its own evaluations."
+  notice = "Notice that the closure changes `evals`, a variable outside it, and the count is 10, one per step. The value, 0.348678 against the exact 0.367879, is Euler's error at h = 0.1."
+  code = '''
+fn euler(mut f: impl FnMut(f64, f64) -> f64, y0: f64, h: f64, steps: usize) -> f64 {
+    let mut y = y0;
+    let mut t = 0.0;
+    for _ in 0..steps {
+        y += h * f(t, y);
+        t += h;
+    }
+    y
+}
+
+fn main() {
+    let mut evals = 0;
+    let y = euler(|_t, y| { evals += 1; -y }, 1.0, 0.1, 10);
+    println!("y(1) = {y:.6} after {evals} evaluations (exact {:.6})", (-1.0f64).exp());
+}
+'''
+
+  [[section.example]]
+  caption = "The same integrator asking for Fn: now the counting closure is rejected."
+  notice = "Notice that the error, E0594, is reported at `evals += 1` inside the caller's closure, and names the `Fn` bound as the reason. The fix is to weaken the bound to FnMut, not to stop counting."
+  code = '''
+fn euler(f: impl Fn(f64, f64) -> f64, y0: f64, h: f64, steps: usize) -> f64 {
+    let mut y = y0;
+    let mut t = 0.0;
+    for _ in 0..steps {
+        y += h * f(t, y);
+        t += h;
+    }
+    y
+}
+
+fn main() {
+    let mut evals = 0;
+    let y = euler(|_t, y| { evals += 1; -y }, 1.0, 0.1, 10);
+    println!("{y} {evals}");
+}
+'''
+
+[[section]]
+title = "impl Trait: naming a closure or an iterator you cannot write the type of"
+refs = ["rust-book-ch10", "rust-reference-impl-trait"]
+body = '''
+Every closure has its own type, which has no name you can write. So does
+almost every iterator chain (`Map<Windows<'_, f64>, {closure}>`). `impl
+Trait` says "some type that implements this trait" in the places where the
+real type would go:
+
+* **Argument position**, `f: impl Fn(f64) -> f64`, is shorthand for a generic
+  parameter `<F: Fn(f64) -> f64>`. The caller chooses the type, and the
+  function is compiled once for each closure type it is called with (unit
+  02), so the call costs what a direct call costs.
+* **Return position**, `-> impl Fn(f64) -> f64`, means the function chooses
+  one concrete type and hides it. The caller can use only what the trait
+  promises. This is how a function returns a closure or a lazy iterator
+  without boxing it.
+
+A returned closure that uses the function's arguments must own them, so it
+is written `move |x| ..`. A returned iterator that borrows a slice says so
+with `+ '_`: the iterator may not outlive the slice it walks.
+'''
+
+  [[section.example]]
+  caption = "A function that returns a closure (a numerical derivative), and one that returns a lazy iterator over a slice."
+  notice = "Notice that `central_diff` returns a function you then call, and the result is off from cos(0) = 1 by about h²/6 = 1.7e-9, the error of a central difference. `midpoints` computes nothing until `collect` runs it."
+  code = '''
+fn central_diff(f: impl Fn(f64) -> f64, h: f64) -> impl Fn(f64) -> f64 {
+    move |x| (f(x + h) - f(x - h)) / (2.0 * h)
+}
+
+fn midpoints(x: &[f64]) -> impl Iterator<Item = f64> + '_ {
+    x.windows(2).map(|w| 0.5 * (w[0] + w[1]))
+}
+
+fn main() {
+    let dsin = central_diff(f64::sin, 1e-4);
+    println!("d/dx sin at 0: {:.12}", dsin(0.0));
+    let grid = [0.0, 1.0, 3.0, 6.0];
+    let mids: Vec<f64> = midpoints(&grid).collect();
+    println!("midpoints {mids:?}");
+}
+'''
+
+[[section]]
+title = "When an index loop is the clearer one"
+refs = ["std-iter"]
+body = '''
+Iterators are not always clearer. The checker's rule RT002 suggests one for
+`for i in 0..x.len()` only when `i` does nothing but index one or two
+slices. That is where `zip` says the same thing in fewer symbols and cannot
+go out of bounds. It leaves alone loops that index **three or more** slices,
+such as a Runge–Kutta update
+`y[i] = y0[i] + h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0`.
+A five-way `zip` of that has to be unpacked into a tuple pattern, and the
+indexed form is the formula as it appears in the textbook.
+
+Do not choose either for speed without measuring. The optimiser can often
+prove simple index loops in bounds and drop the checks, but whether it did
+is a property of the compiled code, not of the source. This unit measures
+no timing; unit 31 measures one, labelled machine-dependent. Choose by what
+reads as the mathematics, and
+by whether the index arithmetic can go wrong. `0..u.len() - 2` underflows
+when `u` has fewer than two elements (a panic in the debug profile), while
+`u.windows(3)` is simply empty.
+'''
+
+[[question]]
+id = "zip-unequal"
+kind = "output"
+prompt = "What is printed?"
+code = '''
+let a = [1.0f64, 2.0, 3.0];
+let b = [1.0f64, 1.0];
+let d: f64 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+println!("{d}");
+'''
+options = ["6", "3", "panic: length mismatch", "compile error E0308"]
+answer = 2
+explanation = "`zip` stops when either side runs out, so only the pairs (1, 1) and (2, 1) are used: 1 + 2 = 3. The third element of `a` is ignored without an error. When the lengths must agree, check them first (`assert_eq!` for your own bug, an Err for the caller's data)."
+
+  [[question.misconception]]
+  option = 1
+  id = "zip-pads-or-wraps"
+  feedback = "`zip` does not pad the shorter side or reuse it; the third element of `a` is never visited."
+
+  [[question.misconception]]
+  option = 3
+  id = "zip-checks-lengths"
+  feedback = "`zip` never checks lengths; it stops at the shorter side, silently."
+
+  [[question.misconception]]
+  option = 4
+  id = "arrays-differ-in-type"
+  feedback = "`[f64; 3]` and `[f64; 2]` are different types, but `zip` takes any iterator over `&f64`, so it compiles."
+
+[[question]]
+id = "move-copies-counter"
+kind = "output"
+prompt = "What is printed?"
+code = '''
+let mut n = 0;
+let mut inc = move || {
+    n += 1;
+    n
+};
+inc();
+inc();
+println!("{n}");
+'''
+options = ["2", "0", "compile error E0382", "compile error E0596"]
+answer = 2
+explanation = "`move` captures `n` by value. An integer is `Copy`, so the closure gets its own copy and `n` outside is still usable. The two calls change the closure's copy (to 1, then 2), and the `n` outside stays 0. To count from outside, drop `move` (the closure then borrows `n` mutably), or return the count."
+
+  [[question.misconception]]
+  option = 1
+  id = "move-shares-variable"
+  feedback = "`move` copies `n` into the closure; the closure changes its own copy, not the variable outside."
+
+  [[question.misconception]]
+  option = 3
+  id = "move-always-moves"
+  feedback = "Moving a `Copy` value copies it, so `n` is still usable after the closure is made; E0382 is for non-Copy values such as a Vec."
+
+  [[question.misconception]]
+  option = 4
+  id = "fnmut-needs-mut-capture"
+  feedback = "`inc` is declared `let mut`, which is what calling an FnMut closure needs; E0596 would appear without it."
+
+[[question]]
+id = "lazy-map"
+kind = "output"
+prompt = "What is printed?"
+code = '''
+let mut count = 0;
+let v = [1.0f64, 2.0, 3.0];
+let _doubled = v.iter().map(|x| {
+    count += 1;
+    x * 2.0
+});
+println!("{count}");
+'''
+options = ["3", "0", "6", "compile error E0502"]
+answer = 2
+explanation = "`map` is lazy: it stores the closure and runs nothing until the iterator is consumed. Nothing consumes `_doubled`, so the closure never runs and `count` is 0. It compiles because `_doubled` is never used again, so its borrow of `count` ends before the `println!`."
+
+  [[question.misconception]]
+  option = 1
+  id = "map-runs-eagerly"
+  feedback = "`map` runs its closure only when something consumes the iterator (`sum`, `collect`, a `for` loop); here nothing does."
+
+  [[question.misconception]]
+  option = 3
+  id = "map-runs-eagerly"
+  feedback = "The closure would add 1, not the element, to `count` if it ran; and it never runs, because nothing consumes the iterator."
+
+  [[question.misconception]]
+  option = 4
+  id = "borrow-lasts-to-scope-end"
+  feedback = "A borrow lasts until its last use, not to the end of the scope; `_doubled` is never used again, so `count` is free for the `println!`."
+
+[[question]]
+id = "index-loop-clearer"
+kind = "choice"
+prompt = "In which of these loops is the index loop the clearer choice, and left alone by rule RT002?"
+options = [
+  "for i in 0..x.len() { y[i] += a * x[i]; }",
+  "for i in 0..v.len() { total += v[i]; }",
+  "for i in 0..y.len() { y[i] = y0[i] + h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0; }",
+  "for i in 0..v.len() { v[i] *= 2.0; }",
 ]
+answer = 3
+explanation = "The Runge–Kutta update reads six slices at the same index. Written with iterators it needs a five-way zip unpacked into nested tuples, while the indexed form is the textbook formula. The other three index one or two slices, where `zip`, `sum` or `iter_mut` says the same thing more simply and cannot go out of bounds."
+
+  [[question.misconception]]
+  option = 1
+  id = "two-slices-need-indices"
+  feedback = "Two slices at the same index is exactly what `zip` is for: `for (yi, xi) in y.iter_mut().zip(x) { *yi += a * xi; }`."
+
+  [[question.misconception]]
+  option = 2
+  id = "sum-needs-index"
+  feedback = "A plain sum over one slice is `v.iter().sum()`; the index adds nothing."
+
+  [[question.misconception]]
+  option = 4
+  id = "in-place-needs-index"
+  feedback = "Changing each element in place is `for x in v.iter_mut() { *x *= 2.0; }`; no index needed."
+
+[[problem]]
+id = "iter-second-difference"
+title = "A three-point stencil with windows(3)"
+difficulty = "warm-up"
+kcs = ["iterator-adaptors", "index-loop-exemption"]
+signature = "pub fn second_difference(u: &[f64], h: f64, out: &mut [f64])"
+entry = "second_difference"
+prompt = '''
+Write `second_difference`, which writes the central second difference of
+`u` with grid spacing `h` into `out`:
+
+    out[i] = (u[i] - 2.0 * u[i + 1] + u[i + 2]) / (h * h)
+
+for every `i` with `i + 2 < u.len()`. `out.len()` is always
+`u.len().saturating_sub(2)` (zero when `u` has fewer than three elements);
+you may assume it and need not check it. A `u` of length 0, 1 or 2 leaves
+`out` empty and must not panic. Allocate nothing.
+
+Results are compared **exactly**, so evaluate the formula as written: in
+that order, dividing by `h * h`. This is not pedantry. For smooth data the
+numerator cancels: three values near 1 combine to something near `h² u''`.
+So an algebraically equal rearrangement such as `(u[i] + u[i+2]) -
+2.0 * u[i+1]` rounds differently, and the difference is large relative to
+the small result. With `h = 0.01` and `|u| ≈ 1`, one ulp of `u` (2.2e-16)
+is a relative error of about 2.2e-16 / (1e-4 · |u''|) ≈ 2e-12 in the
+result, so no fixed tolerance near 1e-12 would be honest. Unit 30 treats
+cancellation in depth. Speed is graded against the reference.
+'''
+starter = '''
+pub fn second_difference(u: &[f64], h: f64, out: &mut [f64]) {
+    for i in 0..u.len() - 2 {
+        out[i] = (u[i] - 2.0 * u[i + 1] + u[i + 2]) / (h * h);
+    }
+}
+'''
+reference = '''
+pub fn second_difference(u: &[f64], h: f64, out: &mut [f64]) {
+    for (o, w) in out.iter_mut().zip(u.windows(3)) {
+        *o = (w[0] - 2.0 * w[1] + w[2]) / (h * h);
+    }
+}
+'''
+compare = "exact"
+cases = [
+  "{ let u = [0.0, 1.0, 4.0, 9.0, 16.0]; let mut out = vec![0.0; 3]; F(&u, 1.0, &mut out); out }",
+  "{ let u: [f64; 0] = []; let mut out: Vec<f64> = vec![]; F(&u, 1.0, &mut out); out }",
+  "{ let u = [3.0]; let mut out: Vec<f64> = vec![]; F(&u, 1.0, &mut out); out }",
+  "{ let u = [3.0, 4.0]; let mut out: Vec<f64> = vec![]; F(&u, 1.0, &mut out); out }",
+  "{ let u = [1.0, 5.0, 2.0]; let mut out = vec![0.0; 1]; F(&u, 0.5, &mut out); out }",
+  "{ let u: Vec<f64> = (0..101).map(|i| (0.01 * i as f64).sin()).collect(); let mut out = vec![0.0; 99]; F(&u, 0.01, &mut out); out }",
+]
+hints = [
+  "The starter's formula is right. Try it with `u = []`: what is `u.len() - 2` for an unsigned length of 0?",
+  "Pair each output slot with the three inputs it needs: `out.iter_mut().zip(u.windows(3))`. When `u` is short, `windows(3)` is simply empty.",
+]
+
+  [problem.random]
+  count = 25
+  setup = "let n = rng.range(0, 40); let h = 0.01 + rng.f64(); let u: Vec<f64> = (0..n).map(|_| rng.normal()).collect();"
+  call = "{ let mut out = vec![0.0; u.len().saturating_sub(2)]; F(&u, h, &mut out); out }"
+
+  [problem.perf]
+  setup = "let u: Vec<f64> = (0..n).map(|_| rng.f64()).collect(); let mut out = vec![0.0; n - 2];"
+  call = "&u, 0.01, &mut out"
+  n = 100000
+
+  [[problem.variant]]
+  label = "chunks_exact(3) instead of windows(3): blocks do not overlap"
+  code = '''
+pub fn second_difference(u: &[f64], h: f64, out: &mut [f64]) {
+    for (o, w) in out.iter_mut().zip(u.chunks_exact(3)) {
+        *o = (w[0] - 2.0 * w[1] + w[2]) / (h * h);
+    }
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "out.iter() instead of iter_mut(): cannot write through a shared reference"
+  code = '''
+pub fn second_difference(u: &[f64], h: f64, out: &mut [f64]) {
+    for (o, w) in out.iter().zip(u.windows(3)) {
+        *o = (w[0] - 2.0 * w[1] + w[2]) / (h * h);
+    }
+}
+'''
+  expect = ["compile_error:E0594"]
+
+  [[problem.variant]]
+  label = "collects the stencil into a new Vec, then copies it into out"
+  code = '''
+pub fn second_difference(u: &[f64], h: f64, out: &mut [f64]) {
+    let d: Vec<f64> = u.windows(3).map(|w| (w[0] - 2.0 * w[1] + w[2]) / (h * h)).collect();
+    out.copy_from_slice(&d);
+}
+'''
+  expect = ["correct", "allocates"]
+
+  [[problem.variant]]
+  label = "for_each with a closure over the zipped pairs"
+  code = '''
+pub fn second_difference(u: &[f64], h: f64, out: &mut [f64]) {
+    let h2 = h * h;
+    out.iter_mut()
+        .zip(u.windows(3))
+        .for_each(|(o, w)| *o = (w[0] - 2.0 * w[1] + w[2]) / h2);
+}
+'''
+  expect = ["correct"]
+
+  [[problem.variant]]
+  label = "an index loop bounded by out.len(): correct, and cannot underflow"
+  code = '''
+pub fn second_difference(u: &[f64], h: f64, out: &mut [f64]) {
+    for i in 0..out.len() {
+        out[i] = (u[i] - 2.0 * u[i + 1] + u[i + 2]) / (h * h);
+    }
+}
+'''
+  expect = ["correct"]
+
+[[problem]]
+id = "clo-trapezoid"
+title = "A trapezoid rule whose evaluations the caller can count"
+difficulty = "core"
+kcs = ["closure-traits", "impl-trait", "iterator-adaptors"]
+signature = "pub fn trapezoid(f: impl FnMut(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64>"
+entry = "trapezoid"
+prompt = '''
+Write `trapezoid`, the composite trapezoid rule for the integral of `f` over
+`[a, b]` with `n` equal intervals. Callers pass closures that count their
+own calls, so `f` must be taken as `FnMut` (write `mut f: impl FnMut(f64) -> f64`;
+the `mut` is part of the pattern, not the type), and it must be called
+**exactly `n + 1` times**, once per grid point:
+
+1. If `n == 0`, or `a` or `b` is not finite: return `None` without calling
+   `f` at all.
+2. Otherwise let `h = (b - a) / n as f64` and
+   `s = 0.5 * (f(a) + f(b))`. Then add `f(a + i as f64 * h)` for each `i` in
+   `1..n`, and return `Some(s * h)`.
+
+Each test returns the result together with the number of calls, and both
+must match. The call count is compared exactly.
+
+The result is compared with `rtol = 1e-12`, derived as follows. Every test
+integrand is positive on its interval, so the sum has no cancellation, and
+adding its at most 1001 terms in a different order changes it by at most
+about n·ε ≈ 1001 × 1.1e-16 ≈ 1.1e-13 relative (Higham, ch. 4). That is
+within 1e-12, so a sum built in another order (an iterator's `sum`, say)
+passes. A version that evaluates `f` at the wrong points is off by far
+more, and one that calls `f` twice per interval fails the call count.
+'''
+starter = '''
+pub fn trapezoid(mut f: impl FnMut(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64> {
+    if n == 0 || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let h = (b - a) / n as f64;
+    let mut s = 0.0;
+    for i in 0..n {
+        let x0 = a + i as f64 * h;
+        let x1 = a + (i + 1) as f64 * h;
+        s += 0.5 * (f(x0) + f(x1));
+    }
+    Some(s * h)
+}
+'''
+reference = '''
+pub fn trapezoid(mut f: impl FnMut(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64> {
+    if n == 0 || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let h = (b - a) / n as f64;
+    let mut s = 0.5 * (f(a) + f(b));
+    for i in 1..n {
+        s += f(a + i as f64 * h);
+    }
+    Some(s * h)
+}
+'''
+cases = [
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; x * x }, 0.0, 1.0, 4); (r, calls) }",
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; x.exp() }, 0.0, 1.0, 1000); (r, calls) }",
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; x.sin() }, 0.0, std::f64::consts::PI, 64); (r, calls) }",
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; 1.0 / (1.0 + x * x) }, 0.0, 1.0, 1); (r, calls) }",
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; x * x }, 0.0, 1.0, 0); (r, calls) }",
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; x * x }, 0.0, f64::NAN, 10); (r, calls) }",
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; x * x }, f64::NEG_INFINITY, 0.0, 10); (r, calls) }",
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; 1.0 + x * x }, 2.0, 2.0, 5); (r, calls) }",
+  "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; 1.0 + x * x }, 1.0, -1.0, 10); (r, calls) }",
+]
+rtol = 1e-12
+hints = [
+  "The starter's value is right. Count how many times it calls `f` for n intervals, and compare with the number of grid points.",
+  "Each interior point is shared by two intervals. Evaluate the two ends once, with weight 1/2, and every interior point once, with weight 1.",
+]
+
+  [problem.random]
+  count = 25
+  setup = "let c = 0.1 + 5.0 * rng.f64(); let l = 0.1 + 3.0 * rng.f64(); let m = rng.range(1, 200);"
+  call = "{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; 1.0 / (1.0 + c * x * x) }, 0.0, l, m); (r, calls) }"
+
+  [problem.perf]
+  setup = ""
+  call = "|x: f64| 1.0 / (1.0 + x * x), 0.0, 1.0, n"
+  n = 100000
+
+  [[problem.variant]]
+  label = "asks for Fn: the caller's counting closure no longer fits"
+  code = '''
+pub fn trapezoid(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64> {
+    if n == 0 || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let h = (b - a) / n as f64;
+    let mut s = 0.5 * (f(a) + f(b));
+    for i in 1..n {
+        s += f(a + i as f64 * h);
+    }
+    Some(s * h)
+}
+'''
+  expect = ["compile_error:signature"]
+
+  [[problem.variant]]
+  label = "asks for FnOnce: f cannot be called a second time"
+  code = '''
+pub fn trapezoid(f: impl FnOnce(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64> {
+    if n == 0 || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let h = (b - a) / n as f64;
+    let mut s = 0.5 * (f(a) + f(b));
+    for i in 1..n {
+        s += f(a + i as f64 * h);
+    }
+    Some(s * h)
+}
+'''
+  expect = ["compile_error:E0382"]
+
+  [[problem.variant]]
+  label = "FnMut without `mut f`: calling it needs exclusive access"
+  code = '''
+pub fn trapezoid(f: impl FnMut(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64> {
+    if n == 0 || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let h = (b - a) / n as f64;
+    let mut s = 0.5 * (f(a) + f(b));
+    for i in 1..n {
+        s += f(a + i as f64 * h);
+    }
+    Some(s * h)
+}
+'''
+  expect = ["compile_error:E0596"]
+
+  [[problem.variant]]
+  label = "interior points with map and sum: the closure borrows f mutably"
+  code = '''
+pub fn trapezoid(mut f: impl FnMut(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64> {
+    if n == 0 || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let h = (b - a) / n as f64;
+    let ends = 0.5 * (f(a) + f(b));
+    let interior: f64 = (1..n).map(|i| f(a + i as f64 * h)).sum();
+    Some((ends + interior) * h)
+}
+'''
+  expect = ["correct"]
+
+  [[problem.variant]]
+  label = "evaluates f(a) before checking n"
+  code = '''
+pub fn trapezoid(mut f: impl FnMut(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64> {
+    let fa = f(a);
+    if n == 0 || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let h = (b - a) / n as f64;
+    let mut s = 0.5 * (fa + f(b));
+    for i in 1..n {
+        s += f(a + i as f64 * h);
+    }
+    Some(s * h)
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "collects the samples into a Vec before summing"
+  code = '''
+pub fn trapezoid(mut f: impl FnMut(f64) -> f64, a: f64, b: f64, n: usize) -> Option<f64> {
+    if n == 0 || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let h = (b - a) / n as f64;
+    let ys: Vec<f64> = (0..=n).map(|i| if i == n { f(b) } else { f(a + i as f64 * h) }).collect();
+    let s = 0.5 * (ys[0] + ys[n]) + ys[1..n].iter().sum::<f64>();
+    Some(s * h)
+}
+'''
+  expect = ["correct", "allocates"]
+
+[[reference]]
+id = "rust-book-ch13"
+text = "S. Klabnik, C. Nichols et al., The Rust Programming Language, chapter 13: Functional Language Features: Iterators and Closures."
+url = "https://doc.rust-lang.org/book/ch13-00-functional-features.html"
+
+[[reference]]
+id = "rust-book-ch10"
+text = "S. Klabnik, C. Nichols et al., The Rust Programming Language, section 10.2: Traits (impl Trait in argument and return position)."
+url = "https://doc.rust-lang.org/book/ch10-02-traits.html"
+
+[[reference]]
+id = "std-iter"
+text = "The Rust Standard Library: module std::iter (laziness, adaptors and consumers); slice methods windows and chunks_exact."
+url = "https://doc.rust-lang.org/std/iter/index.html"
+
+[[reference]]
+id = "std-fnmut"
+text = "The Rust Standard Library: trait std::ops::FnMut (and its relation to Fn and FnOnce)."
+url = "https://doc.rust-lang.org/std/ops/trait.FnMut.html"
+
+[[reference]]
+id = "rust-reference-closures"
+text = "The Rust Reference: closure expressions and closure types (capture modes, move)."
+url = "https://doc.rust-lang.org/reference/types/closure.html"
+
+[[reference]]
+id = "rust-reference-impl-trait"
+text = "The Rust Reference: impl Trait types."
+url = "https://doc.rust-lang.org/reference/types/impl-trait.html"
+
+[[reference]]
+id = "higham-2002"
+text = "N. J. Higham, Accuracy and Stability of Numerical Algorithms, 2nd ed., SIAM, 2002 (chapter 4, summation)."
+url = "https://doi.org/10.1137/1.9780898718027"
