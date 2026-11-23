@@ -57,6 +57,11 @@ passes and every check below has been done.
     result together with a count the closure keeps:
     `"{ let mut calls = 0usize; let r = F(|x: f64| { calls += 1; x * x }, 0.0, 1.0, 4); (r, calls) }"`.
     Counts compare exactly (unit 04, `clo-trapezoid`).
+  * A problem can grade a *test* instead of a function: put correct
+    implementations and mutants in `provided`, make the entry return `bool`
+    (true = the test passes), and let each case name one implementation
+    (`"provided::trap"`). The reference test must accept every correct one
+    and reject every mutant (unit 05, `test-kills-mutants`).
   * `random.setup` may use `rng.f64()`, `rng.range(lo, hi)` and `rng.normal()`
     (SplitMix64, stable by construction).
   * `perf` declares `setup`, `call` and `n`; the harness times the call.

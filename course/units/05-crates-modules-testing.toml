@@ -1,12 +1,596 @@
 id = "05-crates-modules-testing"
 title = "Crates, modules and tests as specifications"
 track = "core"
-status = "planned"
-summary = """Packages and modules, `pub`, unit vs integration tests, `#[should_panic]` and why it cannot tell `todo!()` from a correct panic, property tests without dependencies, and tolerances that say where they come from."""
-outline = [
-  "Module tree and visibility",
-  "Integration tests as the public contract",
-  "Deriving a test tolerance from an error bound",
-  "The should_panic trap (found by odeint's holemap)",
-  "Problem: write tests that kill a set of mutants",
+status = "ready"
+summary = "A crate is a tree of modules, and `pub` decides which parts of the tree other code may use. That boundary is what lets a type protect an invariant, and it is also what an integration test is written against: the public contract. A test is a specification only if it fails for wrong code and passes for every correct version, so its tolerance has to come from an error bound. And `#[should_panic]` cannot tell an unfinished `todo!()` from the intended panic. Ends with a problem that reverses the usual roles: write the test, and it is graded on which mutants it rejects."
+kcs = ["module-visibility", "unit-vs-integration-tests", "derived-tolerances", "should-panic-trap", "tests-kill-mutants"]
+prerequisites = ["core/02-traits-and-generics", "core/03-errors-and-results", "core/04-iterators-and-closures"]
+
+[[section]]
+title = "Modules and visibility: privacy protects invariants"
+refs = ["rust-book-ch07", "rust-reference-visibility"]
+body = '''
+A **package** (one `Cargo.toml`) builds one or more **crates**: a library
+crate rooted at `src/lib.rs`, binaries, tests and examples. Inside a crate,
+`mod name { .. }` (or a file `name.rs`) makes a **module**, and modules form
+a tree with the crate root at the top.
+
+Everything is **private by default**. A private item can be used by the
+module it is in and by that module's descendants, and nowhere else. `pub`
+makes it visible wherever its parent module is visible. `pub(crate)` makes it
+visible anywhere in this crate, but not to users of the crate. `use` only
+creates a shorter name; it never changes what is visible.
+
+Privacy works per field, too, and that is what makes it a tool and not just
+tidiness. If a struct has a private field, code outside its module cannot
+build the struct with `Grid { .. }`: it has to call a constructor that you
+wrote. The constructor can then establish an invariant, such as "`h` is
+`(b - a) / n`", and no other code can break it. (odeint's `Workspace` does
+not do this: its buffers are `pub` fields, so a caller could resize one, and
+the kernels check lengths instead. Privacy would be the stronger design.)
+'''
+
+  [[section.example]]
+  caption = "A grid whose spacing is a private field: the constructor is the only way to make one."
+  notice = "Notice that `n` is read directly (it is `pub`), while `h` is reached only through the method `h()`."
+  code = '''
+mod grid {
+    /// A uniform grid on [a, b] with n intervals. `h` is private, so the
+    /// only way to make a Grid is `new`, and h always matches n.
+    pub struct Grid {
+        pub n: usize,
+        h: f64,
+    }
+
+    impl Grid {
+        pub fn new(a: f64, b: f64, n: usize) -> Grid {
+            Grid { n, h: (b - a) / n as f64 }
+        }
+        pub fn h(&self) -> f64 {
+            self.h
+        }
+    }
+}
+
+fn main() {
+    let g = grid::Grid::new(0.0, 1.0, 4);
+    println!("n = {}, h = {}", g.n, g.h());
+}
+'''
+
+  [[section.example]]
+  caption = "Building the same Grid directly, from outside its module, with an inconsistent h."
+  notice = "Notice that the error is E0451 (a private field), raised at the struct literal: code outside `grid` cannot make a Grid whose h disagrees with n."
+  code = '''
+mod grid {
+    pub struct Grid {
+        pub n: usize,
+        h: f64,
+    }
+
+    impl Grid {
+        pub fn new(a: f64, b: f64, n: usize) -> Grid {
+            Grid { n, h: (b - a) / n as f64 }
+        }
+        pub fn h(&self) -> f64 {
+            self.h
+        }
+    }
+}
+
+fn main() {
+    let bad = grid::Grid { n: 4, h: 0.5 };
+    println!("{}", bad.h());
+}
+'''
+
+[[section]]
+title = "Unit tests, integration tests, and the public contract"
+refs = ["rust-book-ch11"]
+body = '''
+`cargo test` builds and runs three kinds of test:
+
+* **Unit tests**, in a `#[cfg(test)] mod tests { .. }` inside a source file.
+  They are a child module, so they can call that file's private helpers.
+  `#[cfg(test)]` means the module is compiled only for `cargo test`.
+* **Integration tests**, each file in `tests/` compiled as a **separate
+  crate** that depends on yours. They can use only what is `pub`, exactly
+  as a user of your library would.
+* **Doc tests**, the code blocks in `///` comments, also compiled as users.
+
+Integration tests are therefore the natural place for a **specification**:
+they state what the library promises and nothing about how it is done, so
+any correct implementation passes them. This tutor is built on that idea.
+odeint's `tests/behaviour.rs` is the specification of every hole, and a
+learner's code is judged only by it. A test that inspects how the code is
+written (which loop, which helper) cannot be a specification: a different
+correct version would fail it.
+
+A **property test** checks a law on many generated inputs instead of one
+value on one input. Examples are "reversing the interval negates the
+integral" or "the result is within the error bound of the exact answer".
+No dependency is needed: a seeded generator such as the 64-bit SplitMix
+that this tutor uses makes the inputs reproducible, so a failure can be
+replayed from its seed.
+'''
+
+  [[section.analogy]]
+  title = "A sieve for programs"
+  text = '''
+A test suite is a sieve. Correct programs should fall through and wrong ones
+should be caught. Mutation testing checks the sieve by throwing in programs
+known to be wrong (mutants: a changed constant, a dropped term, a `todo!()`)
+and seeing which ones it catches. A mutant that gets through marks a hole in
+the mesh. A correct program that gets caught marks a mesh that is too fine:
+a test that is stricter than the specification, such as `==` on floats.
+'''
+  breaks = '''
+A sieve sorts by one property, size. A test suite can check many properties
+at once, and a mutant can slip through one test and be caught by another.
+Some mutants also cannot be caught by any sieve, because they are not wrong:
+an "equivalent mutant" (say, `x * 2.0` changed to `x + x`) computes the
+same thing. A surviving mutant is a question to look into, not automatically
+a missing test.
+'''
+
+[[section]]
+title = "A tolerance is a claim: derive it from an error bound"
+refs = ["higham-2002", "burden-faires"]
+body = '''
+A numerical test compares a computed value with an expected one, and the
+comparison needs a tolerance. A tolerance picked by trying values until the
+test passes says nothing. A tolerance derived from what the method is known
+to do is a claim you can check, and it decides which mistakes the test can
+see.
+
+There are two kinds of error, and they have different sizes.
+
+* **Method error** is the error the method has in exact arithmetic. For the
+  composite trapezoid rule with `n` intervals of width `h` it is
+  `-(b - a) h² f''(ξ) / 12` for some `ξ` in `[a, b]`. For `f = x²` on
+  `[0, 1]`, `f'' = 2` everywhere, so the error is exactly `+h²/6`. A test can
+  then check the result against `1/3 + h²/6` and not just against `1/3`.
+* **Rounding error** comes from doing the arithmetic in f64. For a sum of `n`
+  positive terms it is at most about `n · 1.1e-16` relative.
+
+The test's tolerance must be **larger than the rounding** that correct
+versions can differ by, and **smaller than the method error of the wrong
+methods** you want to catch. For the trapezoid rule on `x²` with `n = 10`,
+the rounding is about 1e-16. The midpoint rule, a plausible wrong method,
+has error `-h²/12` there, so it lands 2.5e-3 away from the trapezoid value.
+Anything from about 1e-14 to 1e-3 would separate them. Checking only
+against `1/3` with a tolerance of 1e-2 would accept both.
+
+A convergence-order check (halve `h`, and the error should drop by 4) is a
+good test, but it does not catch everything. Both rules are second order,
+so it cannot tell them apart. Only the error constant, `+h²/6` against
+`-h²/12`, can.
+'''
+
+  [[section.example]]
+  caption = "The trapezoid rule on x² over [0, 1]: the measured error against the predicted h²/6."
+  notice = "Notice that the error matches h²/6 to within about 1e-16 at every n: the method error is known exactly, and what is left is rounding, thirteen orders of magnitude smaller."
+  code = '''
+fn trap(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let mut s = 0.5 * (f(a) + f(b));
+    for i in 1..n {
+        s += f(a + i as f64 * h);
+    }
+    s * h
+}
+
+fn main() {
+    // For f = x^2 on [0, 1] the trapezoid error is exactly h^2 / 6.
+    for n in [10, 20, 40] {
+        let h = 1.0 / n as f64;
+        let err = trap(|x| x * x, 0.0, 1.0, n) - 1.0 / 3.0;
+        let predicted = h * h / 6.0;
+        println!("n {n:2}: error {err:.6e}, predicted {predicted:.6e}, difference {:+.1e}", err - predicted);
+    }
+}
+'''
+
+[[section]]
+title = "The should_panic trap"
+refs = ["rust-book-ch11"]
+body = '''
+`#[should_panic]` marks a test that passes if its body panics. That seems
+like the way to test that `mean(&[])` rejects an empty slice. But an
+**unfinished** function panics too: `todo!()` panics with "not yet
+implemented". So does an unrelated bug, such as an index out of bounds. A
+plain `#[should_panic]` test passes for all of them. It cannot fail for the
+starter code, so it specifies nothing about it.
+
+There are two fixes.
+
+* `#[should_panic(expected = "empty slice")]` passes only if the panic
+  message **contains** that text.
+* Write the test so that it also requires the **non-panicking** case to
+  work. odeint's `length_mismatch_panics` test (in `tests/behaviour.rs`)
+  does this: it calls `lincomb` once with matching lengths, which must
+  return, and once with a mismatch, which must panic. A `todo!()` body fails
+  the first call.
+
+This is also why every hole in this tutor has a "trivial body" that must
+fail a test (`holemap --check`). A suite whose only test of a function is a
+plain `should_panic` would let `todo!()` through, and the check would say
+so.
+'''
+
+  [[section.example]]
+  caption = "What a should_panic test sees when it calls a finished and an unfinished function on an empty slice."
+  notice = "Notice that a plain `#[should_panic]` passes for both, because both panic. The `expected` text tells them apart: `todo!()` says \"not yet implemented\"."
+  code = '''
+fn finished(x: &[f64]) -> f64 {
+    assert!(!x.is_empty(), "mean of an empty slice");
+    x.iter().sum::<f64>() / x.len() as f64
+}
+
+fn unfinished(_x: &[f64]) -> f64 {
+    todo!()
+}
+
+// What a #[should_panic] test sees: did calling it on [] panic, and with what message?
+fn panic_message(f: fn(&[f64]) -> f64) -> Option<String> {
+    let r = std::panic::catch_unwind(|| f(&[]));
+    r.err().map(|e| {
+        e.downcast_ref::<String>().cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default()
+    })
+}
+
+fn main() {
+    std::panic::set_hook(Box::new(|_| {})); // keep the panics quiet
+    for (name, f) in [("finished", finished as fn(&[f64]) -> f64), ("unfinished", unfinished)] {
+        let m = panic_message(f);
+        let plain = m.is_some();
+        let expected = m.as_deref().is_some_and(|s| s.contains("empty slice"));
+        println!("{name:10}: message {m:?}");
+        println!("{name:10}: #[should_panic] passes: {plain}; #[should_panic(expected = \"empty slice\")] passes: {expected}");
+    }
+}
+'''
+
+[[question]]
+id = "private-fn"
+kind = "output"
+prompt = "What happens?"
+code = '''
+mod solver {
+    fn step(x: f64) -> f64 {
+        x / 2.0
+    }
+    pub fn run(x: f64) -> f64 {
+        step(step(x))
+    }
+}
+
+fn main() {
+    println!("{} {}", solver::run(8.0), solver::step(8.0));
+}
+'''
+options = ["2 4", "compile error E0603", "compile error E0425", "2 2"]
+answer = 2
+explanation = "`step` is private to `solver`. `run`, inside the same module, may call it, but `main` may not, even though it is in the same file: E0603 (function `step` is private). Making it `pub` or `pub(crate)` would fix the error; so would having callers use only `run`."
+
+  [[question.misconception]]
+  option = 1
+  id = "same-file-is-visible"
+  feedback = "Privacy follows the module tree, not the file: `main` is outside `solver`, so it cannot call `solver`'s private `step`."
+
+  [[question.misconception]]
+  option = 3
+  id = "private-is-not-found"
+  feedback = "E0425 is for a name that does not exist. `step` exists and is found; rustc reports that it is private (E0603)."
+
+  [[question.misconception]]
+  option = 4
+  id = "privacy-is-checked-at-run-time"
+  feedback = "Privacy is checked when compiling: the call is rejected and nothing runs."
+
+[[question]]
+id = "which-test-sees-private"
+kind = "choice"
+prompt = "`src/lib.rs` has a private helper `fn norm(v: &[f64]) -> f64`. Which test can call `norm` directly?"
+options = [
+  "A test in tests/norms.rs",
+  "A test inside #[cfg(test)] mod tests in src/lib.rs",
+  "A doc test in a /// comment above a pub fn in src/lib.rs",
+  "An example in examples/demo.rs",
 ]
+answer = 2
+explanation = "The unit-test module is a child of the crate root, and children can see their ancestors' private items. Integration tests, doc tests and examples are each compiled as a separate crate that uses yours from outside, so they see only `pub` items."
+
+  [[question.misconception]]
+  option = 1
+  id = "tests-dir-sees-everything"
+  feedback = "Each file in tests/ is a separate crate; it can use only your crate's pub items."
+
+  [[question.misconception]]
+  option = 3
+  id = "doc-tests-are-inside"
+  feedback = "A doc test is compiled as an outside user of the crate, so private items are not in scope."
+
+  [[question.misconception]]
+  option = 4
+  id = "examples-are-inside"
+  feedback = "Examples are separate binaries that depend on the library; they see only its public API."
+
+[[question]]
+id = "should-panic-todo"
+kind = "output"
+prompt = "This is the body of a test written in the style of `#[should_panic]`, run against an unfinished function. What is printed?"
+code = '''
+fn checked_sqrt(_x: f64) -> f64 {
+    todo!()
+}
+
+fn main() {
+    std::panic::set_hook(Box::new(|_| {}));
+    // The body of a #[should_panic] test for negative input:
+    let r = std::panic::catch_unwind(|| checked_sqrt(-1.0));
+    println!("{}", if r.is_err() { "test passes" } else { "test fails" });
+}
+'''
+options = ["test fails", "test passes", "panic: not yet implemented", "compile error E0308"]
+answer = 2
+explanation = "`todo!()` panics, and a should_panic test passes on any panic. The test cannot tell the unfinished function from one that correctly rejects -1. Requiring the panic message (`expected = \"negative\"`), or also checking that a valid input works, makes it fail for `todo!()`."
+
+  [[question.misconception]]
+  option = 1
+  id = "should-panic-checks-reason"
+  feedback = "A plain should_panic accepts any panic, including the one `todo!()` raises; only `expected = ...` checks the reason."
+
+  [[question.misconception]]
+  option = 3
+  id = "caught-panic-escapes"
+  feedback = "`catch_unwind` (what the test harness does for you) stops the panic; the program carries on and prints."
+
+  [[question.misconception]]
+  option = 4
+  id = "todo-has-wrong-type"
+  feedback = "`todo!()` has type `!` (never), which fits any return type, so it compiles."
+
+[[question]]
+id = "trapezoid-test-tolerance"
+kind = "choice"
+prompt = "`t` is the trapezoid rule for x² on [0, 1] with n = 10 (h = 0.1). Which check accepts every correct implementation and rejects the midpoint rule?"
+options = [
+  "t == 1.0 / 3.0 + h * h / 6.0",
+  "(t - 1.0 / 3.0).abs() <= 1e-2",
+  "(t - (1.0 / 3.0 + h * h / 6.0)).abs() <= 1e-13",
+  "(t - 1.0 / 3.0).abs() <= f64::EPSILON",
+]
+answer = 3
+explanation = "The trapezoid error for x² is exactly h²/6, so the expected value is 1/3 + h²/6. Correct versions differ from it only by rounding, about 1e-16, while the midpoint rule is 2.5e-3 away. A tolerance of 1e-13 sits between the two with a wide margin on each side."
+
+  [[question.misconception]]
+  option = 1
+  id = "float-equality-in-tests"
+  feedback = "Correct versions differ in rounding: the plain trapezoid loop lands 1.1e-16 from 1/3 + h²/6, so `==` rejects it."
+
+  [[question.misconception]]
+  option = 2
+  id = "loose-tolerance-is-safe"
+  feedback = "1e-2 is wider than the gap between the trapezoid and midpoint rules (2.5e-3), so it accepts the wrong method."
+
+  [[question.misconception]]
+  option = 4
+  id = "epsilon-is-a-tolerance"
+  feedback = "The trapezoid rule's own method error, h²/6 = 1.7e-3, is far larger than EPSILON, so this rejects every correct version."
+
+[[problem]]
+id = "test-kills-mutants"
+title = "Write the test: accept every correct trapezoid rule, reject the mutants"
+difficulty = "core"
+kcs = ["tests-kill-mutants", "derived-tolerances"]
+signature = "pub fn accepts(rule: Rule) -> bool"
+entry = "accepts"
+provided = '''
+/// A quadrature rule: integrate f over [a, b] with n intervals.
+pub type Rule = fn(fn(f64) -> f64, f64, f64, usize) -> f64;
+
+/// Correct: the composite trapezoid rule.
+pub fn trap(f: fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let mut s = 0.5 * (f(a) + f(b));
+    for i in 1..n { s += f(a + i as f64 * h); }
+    s * h
+}
+
+/// Correct: the same rule with grid points by repeated addition and the
+/// ends added last (it rounds differently).
+pub fn trap_accumulate(f: fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let mut x = a;
+    let mut s = 0.0;
+    for _ in 1..n { x += h; s += f(x); }
+    (s + 0.5 * (f(a) + f(b))) * h
+}
+
+/// Mutant: the end points weighted 1 instead of 1/2.
+pub fn mut_full_ends(f: fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let mut s = f(a) + f(b);
+    for i in 1..n { s += f(a + i as f64 * h); }
+    s * h
+}
+
+/// Mutant: the left Riemann sum (first order).
+pub fn mut_left(f: fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let mut s = 0.0;
+    for i in 0..n { s += f(a + i as f64 * h); }
+    s * h
+}
+
+/// Mutant: the midpoint rule (second order, like the trapezoid rule).
+pub fn mut_midpoint(f: fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let mut s = 0.0;
+    for i in 0..n { s += f(a + (i as f64 + 0.5) * h); }
+    s * h
+}
+
+/// Mutant: sorts the end points, so a reversed interval has the wrong sign.
+pub fn mut_sorted_ends(f: fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    trap(f, lo, hi, n)
+}
+
+/// Mutant: the loop runs to n inclusive, adding f(b) a second time.
+pub fn mut_extra_point(f: fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let mut s = 0.5 * (f(a) + f(b));
+    for i in 1..=n { s += f(a + i as f64 * h); }
+    s * h
+}
+'''
+prompt = '''
+This time you write the test. `accepts(rule)` must return `true` for every
+correct composite trapezoid rule and `false` for every wrong one. It is
+graded against the seven rules in the provided code: the two correct ones
+(`trap`, `trap_accumulate`), which round differently, and the five mutants.
+Returning `false` stands for a failing test. Do not panic, and do not
+compare function addresses: call `rule` and judge what it returns.
+
+`rule(f, a, b, n)` integrates `f` over `[a, b]` with `n` intervals. `f` is a
+plain function pointer, so pass a named `fn` or a closure that captures
+nothing (`|x| x * x`).
+
+What you can rely on, as numbers to build tolerances from:
+
+* The trapezoid rule is exact for straight lines, in exact arithmetic.
+* For `f = x²` on `[0, 1]` its error is exactly `+h²/6` (`h = 1/n`). The
+  midpoint rule's is `-h²/12`.
+* Rounding: with `n = 10` and integrands of size at most 3, the sum of 11
+  terms has partial sums up to about 20. Recursive summation then gives at
+  most about `10 · 1.1e-16 · 20 ≈ 2.2e-14`, times `h = 0.1`, so about
+  `2e-15` in the result. Rounding the grid points adds less than `1e-15`. So
+  two correct rules can differ by a few `1e-15`, and a tolerance of `1e-13`
+  keeps a margin of 30 above that. Your tolerance has to sit above the
+  rounding and below the smallest mutant error you need to see. Derive it
+  in a comment.
+'''
+starter = '''
+pub fn accepts(rule: Rule) -> bool {
+    // Exact for straight lines: the integral of 2x + 1 over [0, 1] is 2.
+    let lin = rule(|x| 2.0 * x + 1.0, 0.0, 1.0, 10);
+    (lin - 2.0).abs() <= 1e-13
+}
+'''
+reference = '''
+pub fn accepts(rule: Rule) -> bool {
+    // Rounding in a correct rule with n = 10 and |f| <= 3 is a few 1e-15
+    // (see the prompt), so 1e-13 accepts every correct rule. The smallest
+    // mutant error below is 2.5e-3 (midpoint, on x^2), far above it.
+    let tol = 1e-13;
+    // 1. Exact for straight lines: the integral of 2x + 1 over [0, 1] is 2.
+    let lin = rule(|x| 2.0 * x + 1.0, 0.0, 1.0, 10);
+    // 2. Reversing the interval negates the integral.
+    let rev = rule(|x| 2.0 * x + 1.0, 1.0, 0.0, 10);
+    // 3. The error constant: for x^2 the trapezoid error is exactly +h^2/6.
+    let h = 0.1;
+    let quad = rule(|x| x * x, 0.0, 1.0, 10);
+    (lin - 2.0).abs() <= tol && (rev + 2.0).abs() <= tol && (quad - (1.0 / 3.0 + h * h / 6.0)).abs() <= tol
+}
+'''
+compare = "exact"
+cases = [
+  "provided::trap",
+  "provided::trap_accumulate",
+  "provided::mut_full_ends",
+  "provided::mut_left",
+  "provided::mut_midpoint",
+  "provided::mut_sorted_ends",
+  "provided::mut_extra_point",
+]
+hints = [
+  "The starter's straight-line test catches three of the mutants. Which two get through, and what do they still get right?",
+  "One mutant is wrong only when b < a. The other is second order like the trapezoid rule, so its error shrinks at the same rate; what differs is the error's size and sign on x².",
+]
+
+  [[problem.variant]]
+  label = "compares with ==: rejects a correct rule over one rounding"
+  code = '''
+pub fn accepts(rule: Rule) -> bool {
+    let lin = rule(|x| 2.0 * x + 1.0, 0.0, 1.0, 10);
+    let rev = rule(|x| 2.0 * x + 1.0, 1.0, 0.0, 10);
+    let quad = rule(|x| x * x, 0.0, 1.0, 10);
+    lin == 2.0 && rev == -2.0 && quad == 1.0 / 3.0 + 0.1 * 0.1 / 6.0
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "checks against 1/3 with a loose 1e-2: the midpoint rule passes"
+  code = '''
+pub fn accepts(rule: Rule) -> bool {
+    let lin = rule(|x| 2.0 * x + 1.0, 0.0, 1.0, 10);
+    let rev = rule(|x| 2.0 * x + 1.0, 1.0, 0.0, 10);
+    let quad = rule(|x| x * x, 0.0, 1.0, 10);
+    (lin - 2.0).abs() <= 1e-2 && (rev + 2.0).abs() <= 1e-2 && (quad - 1.0 / 3.0).abs() <= 1e-2
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "checks the convergence order: the midpoint rule is second order too"
+  code = '''
+fn exp(x: f64) -> f64 {
+    x.exp()
+}
+
+pub fn accepts(rule: Rule) -> bool {
+    let exact = 1f64.exp() - 1.0;
+    let e10 = rule(exp, 0.0, 1.0, 10) - exact;
+    let e20 = rule(exp, 0.0, 1.0, 20) - exact;
+    let lin = rule(|x| 2.0 * x + 1.0, 0.0, 1.0, 10);
+    let rev = rule(|x| 2.0 * x + 1.0, 1.0, 0.0, 10);
+    let ratio = e10 / e20;
+    (lin - 2.0).abs() <= 1e-13 && (rev + 2.0).abs() <= 1e-13 && (3.9..=4.1).contains(&ratio)
+}
+'''
+  expect = ["incorrect"]
+
+  [[problem.variant]]
+  label = "the error constant at n = 4, and the reversed interval on x²"
+  code = '''
+pub fn accepts(rule: Rule) -> bool {
+    // n = 4, h = 1/4: trapezoid error on x^2 is h^2/6 = 1/96. Rounding of a
+    // correct rule is ~1e-16 here, the midpoint rule is off by h^2/4 = 1/64.
+    let fwd = rule(|x| x * x, 0.0, 1.0, 4);
+    let rev = rule(|x| x * x, 1.0, 0.0, 4);
+    let want = 1.0 / 3.0 + 1.0 / 96.0;
+    let lin = rule(|x| 3.0 - x, 0.0, 2.0, 4);
+    (fwd - want).abs() <= 1e-13 && (rev + want).abs() <= 1e-13 && (lin - 4.0).abs() <= 1e-13
+}
+'''
+  expect = ["correct"]
+
+[[reference]]
+id = "rust-book-ch07"
+text = "S. Klabnik, C. Nichols et al., The Rust Programming Language, chapter 7: Managing Growing Projects with Packages, Crates, and Modules."
+url = "https://doc.rust-lang.org/book/ch07-00-managing-growing-projects-with-packages-crates-and-modules.html"
+
+[[reference]]
+id = "rust-reference-visibility"
+text = "The Rust Reference: Visibility and privacy."
+url = "https://doc.rust-lang.org/reference/visibility-and-privacy.html"
+
+[[reference]]
+id = "rust-book-ch11"
+text = "S. Klabnik, C. Nichols et al., The Rust Programming Language, chapter 11: Writing Automated Tests (should_panic and expected; unit and integration tests)."
+url = "https://doc.rust-lang.org/book/ch11-00-testing.html"
+
+[[reference]]
+id = "higham-2002"
+text = "N. J. Higham, Accuracy and Stability of Numerical Algorithms, 2nd ed., SIAM, 2002 (chapter 4, summation)."
+url = "https://doi.org/10.1137/1.9780898718027"
+
+[[reference]]
+id = "burden-faires"
+text = "R. L. Burden, J. D. Faires, A. M. Burden, Numerical Analysis, 10th ed., Cengage, 2016 (section 4.4, composite numerical integration: the trapezoid error term)."
+url = "https://www.cengage.com/c/numerical-analysis-10e-burden"

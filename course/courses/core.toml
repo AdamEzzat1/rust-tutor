@@ -34,3 +34,7 @@ assessed_by = ["03-errors-and-results", "project:odeint"]
 [[outcome]]
 text = "Choose the weakest closure bound (Fn, FnMut, FnOnce) a numerical routine can live with, and write stencils and reductions with iterator adaptors, knowing which consumers allocate."
 assessed_by = ["04-iterators-and-closures"]
+
+[[outcome]]
+text = "Write a test that is a specification: against the public API, with a tolerance derived from an error bound, failing for an unfinished body as well as for wrong ones (checked by which mutants it rejects)."
+assessed_by = ["05-crates-modules-testing"]
